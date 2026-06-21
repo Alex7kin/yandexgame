@@ -68,18 +68,25 @@ async function handleUpdate(update, env, selfOrigin) {
 
 async function onMessage(msg, env) {
   const text = (msg.text || "").trim();
-  if (/^\/(start|play)\b/.test(text)) {
+
+  // Only /play or /start (optionally addressed as /play@botname) launches the game.
+  if (/^\/(start|play)(@\w+)?(\s|$)/.test(text)) {
     return tg(env, "sendGame", { chat_id: msg.chat.id, game_short_name: env.GAME_SHORT_NAME });
   }
-  const uname = env.BOT_USERNAME ? "@" + env.BOT_USERNAME : "this bot";
-  return tg(env, "sendMessage", {
-    chat_id: msg.chat.id,
-    text:
-      "🚴 Bike Courier\n\n" +
-      "Send /play to play and set your high score.\n" +
-      "Type " + uname + " in any chat to challenge your friends — everyone who plays " +
-      "from the same message shares one leaderboard.",
-  });
+
+  // Stay silent on everything else (replies, group chatter, mentions). Offer help
+  // only in a private 1:1 chat so the bot never spams a group.
+  if (msg.chat.type === "private") {
+    const uname = env.BOT_USERNAME ? "@" + env.BOT_USERNAME : "this bot";
+    return tg(env, "sendMessage", {
+      chat_id: msg.chat.id,
+      text:
+        "🚴 Bike Courier\n\n" +
+        "Send /play to play and set your high score.\n" +
+        "Type " + uname + " in any chat to challenge your friends — everyone who plays " +
+        "from the same message shares one leaderboard.",
+    });
+  }
 }
 
 // Play button tapped -> answer with the game URL (carrying a signed identity token
