@@ -1,5 +1,0 @@
-# Copy to ".dev.vars" for local `wrangler dev`. Never commit the real .dev.vars.
-# In production these are set with: wrangler secret put <NAME>
-BOT_TOKEN="123456:put-your-bot-token-here"
-SIGNING_SECRET="a-long-random-string-for-hmac"
-WEBHOOK_SECRET="another-long-random-string"
