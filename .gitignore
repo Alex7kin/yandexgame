@@ -1,0 +1,6 @@
+# Claude Code local project config (editor/preview tooling, not part of the game)
+.claude/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
