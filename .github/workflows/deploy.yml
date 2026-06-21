@@ -10,6 +10,7 @@ on:
       - "style.css"
       - "game.js"
       - "images/**"
+      - "sounds/**"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
 

@@ -73,8 +73,14 @@
   // Animation
   const PEDAL_CADENCE    = 7.5;   // crank radians per second at base speed
 
+  // Drone-crash cutscene (one-off spectacle)
+  const DRONE_AT         = 300;  // score that triggers it
+  const DRONE_FLY        = 1.4;   // seconds the drone dives before impact
+  const EXPLODE_DUR      = 1.1;   // explosion / fireball duration
+  const SETTLE_DUR       = 0.6;   // smoke settle before play resumes
+
   // ---------- State ----------
-  const READY = 0, PLAYING = 1, GAMEOVER = 2;
+  const READY = 0, PLAYING = 1, GAMEOVER = 2, CUTSCENE = 3;
   let state = READY;
 
   let groundY = 0, courierX = 0, courierH = 0, courierW = 0;
@@ -92,6 +98,10 @@
 
   // Parallax offsets (in px, ever-decreasing; wrapped at draw time)
   let cloudX = 0, bldX = 0, roadX = 0;
+
+  // Drone-crash cutscene
+  let cutTime = 0, cutExploded = false, droneDone = false;
+  let cutParticles = [];
 
   // ============================================================
   //  Sizing / responsiveness
@@ -139,6 +149,7 @@
       if (AC) audioCtx = new AC();
     }
     if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+    decodeExplosion();   // decode the explosion clip now that we have a context
   }
 
   function beep(freq, dur, type, vol, slideTo) {
@@ -161,12 +172,92 @@
   const playPoint = () => beep(880, 0.08, "square", 0.05);
   const playCrash = () => { beep(220, 0.35, "sawtooth", 0.09, 70); beep(110, 0.4, "square", 0.06, 50); };
 
+  // ---------- Explosion sound (sounds/explosion.mp3) ----------
+  const EXPLOSION_VOL = 1.0;        // raise for a louder blast
+  let explosionBuf = null;          // decoded AudioBuffer
+  let explosionBytes = null;        // raw file bytes; decoded once the audio context exists
+
+  fetch("sounds/explosion.mp3")
+    .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
+    .then((ab) => { explosionBytes = ab; decodeExplosion(); })
+    .catch(() => {});
+
+  function decodeExplosion() {
+    if (!audioCtx || explosionBuf || !explosionBytes) return;
+    // slice(0) keeps a copy — decodeAudioData detaches the buffer it's given.
+    audioCtx.decodeAudioData(explosionBytes.slice(0), (buf) => { explosionBuf = buf; }, () => {});
+  }
+
+  function playExplosion() {
+    if (muted || !audioCtx || !explosionBuf) return;
+    try {
+      const src = audioCtx.createBufferSource();
+      src.buffer = explosionBuf;
+      const g = audioCtx.createGain();
+      g.gain.value = EXPLOSION_VOL;
+      src.connect(g).connect(audioCtx.destination);
+      src.start();
+    } catch (_) {}
+  }
+
+  // Sustained quadcopter buzz for the crash cutscene: two detuned sawtooths
+  // (the "engine") chopped by a tremolo LFO (the rotors), pitch rising as the
+  // drone accelerates into its dive. Held until stopDroneSound() at impact.
+  let droneNodes = null;
+  function startDroneSound() {
+    if (muted || !audioCtx) return;
+    stopDroneSound();                                        // never stack two
+    try {
+      const t = audioCtx.currentTime, end = t + DRONE_FLY;
+      const master = audioCtx.createGain();
+      master.gain.setValueAtTime(0.0001, t);
+      master.gain.exponentialRampToValueAtTime(0.05, t + 0.2);   // fade in
+      const lp = audioCtx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.setValueAtTime(800, t);
+      lp.frequency.linearRampToValueAtTime(1400, end);
+      master.connect(lp).connect(audioCtx.destination);
+
+      const trem = audioCtx.createGain();                   // amplitude chopped by the LFO
+      trem.gain.value = 0.55;
+      const lfo = audioCtx.createOscillator();
+      lfo.type = "sine";
+      lfo.frequency.setValueAtTime(26, t);
+      lfo.frequency.linearRampToValueAtTime(44, end);       // chops faster as it speeds up
+      const depth = audioCtx.createGain();
+      depth.gain.value = 0.45;
+      lfo.connect(depth).connect(trem.gain);
+      trem.connect(master);
+
+      const a = audioCtx.createOscillator(), b = audioCtx.createOscillator();
+      a.type = b.type = "sawtooth";
+      a.frequency.setValueAtTime(85, t); a.frequency.linearRampToValueAtTime(150, end);
+      b.frequency.setValueAtTime(90, t); b.frequency.linearRampToValueAtTime(158, end);
+      a.connect(trem); b.connect(trem);
+
+      a.start(t); b.start(t); lfo.start(t);
+      droneNodes = { master, a, b, lfo };
+    } catch (_) { droneNodes = null; }                       // audio must never break the game
+  }
+  function stopDroneSound() {
+    if (!droneNodes || !audioCtx) return;
+    const t = audioCtx.currentTime, n = droneNodes;
+    droneNodes = null;
+    try {
+      n.master.gain.cancelScheduledValues(t);
+      n.master.gain.setValueAtTime(Math.max(0.0001, n.master.gain.value), t);
+      n.master.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);  // quick fade
+      n.a.stop(t + 0.1); n.b.stop(t + 0.1); n.lfo.stop(t + 0.1);
+    } catch (_) {}
+  }
+
   function updateMuteIcon() { muteBtn.textContent = muted ? "🔇" : "🔊"; }
   muteBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     muted = !muted;
     localStorage.setItem("courier_muted", muted ? "1" : "0");
     updateMuteIcon();
+    if (muted) stopDroneSound();   // silence the drone immediately if muted mid-flight
     resumeAudio();
   });
 
@@ -232,6 +323,7 @@
     scoreFloat = 0;
     score = 0;
     nextPointAt = 100;
+    droneDone = false;
     barriers = [];
     spawnTimer = 0.6; // brief grace before the first barrier
     courier.y = groundY;
@@ -287,6 +379,7 @@
   //  Update
   // ============================================================
   function update(dt) {
+    if (state === CUTSCENE) { updateCutscene(dt); return; } // world frozen during the crash
     const playing = state === PLAYING;
 
     if (playing) {
@@ -343,6 +436,7 @@
     const newScore = Math.floor(scoreFloat);
     if (newScore !== score) { score = newScore; updateHUD(); }
     if (score >= nextPointAt) { nextPointAt += 100; playPoint(); }
+    if (state === PLAYING && !droneDone && score >= DRONE_AT) { droneDone = true; startDrone(); }
   }
 
   // ============================================================
@@ -356,6 +450,7 @@
     drawRoad();
     for (const b of barriers) drawBarrier(b);
     drawCourier();
+    if (state === CUTSCENE) drawCutscene();
   }
 
   function drawSky() {
@@ -676,6 +771,191 @@
 
     // 8) near leg (in front)
     leg(pedN, "#39435a");
+  }
+
+  // ============================================================
+  //  Drone-crash cutscene (fires once at DRONE_AT points)
+  // ============================================================
+  function cutGeom() {
+    const bx = 0.58 * W, bw = 0.20 * W, top = 0.34 * H;
+    return { bx, bw, top, bottom: groundY, ix: bx + 0.05 * W, iy: top + 0.06 * H };
+  }
+
+  function startDrone() {
+    state = CUTSCENE;
+    cutTime = 0;
+    cutExploded = false;
+    cutParticles = [];
+    startDroneSound();
+  }
+
+  function spawnExplosion(x, y) {
+    const cols = ["#ffd34d", "#ff9b2f", "#ff5a2a", "#ffd34d", "#55555f"];
+    for (let i = 0; i < 26; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = (0.25 + Math.random() * 1.05) * H;
+      const life = 0.5 + Math.random() * 0.7;
+      cutParticles.push({
+        x, y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp - 0.25 * H,           // slight upward bias
+        grav: (1.4 + Math.random()) * H,
+        r: (0.006 + Math.random() * 0.013) * H,
+        life, maxLife: life,
+        col: cols[(Math.random() * cols.length) | 0],
+      });
+    }
+  }
+
+  function updateCutscene(dt) {
+    cutTime += dt;
+    const g = cutGeom();
+    if (!cutExploded && cutTime >= DRONE_FLY) {
+      cutExploded = true;
+      stopDroneSound();   // engine cuts out...
+      spawnExplosion(g.ix, g.iy);
+      playExplosion();    // ...replaced by the boom
+    }
+    for (let i = cutParticles.length - 1; i >= 0; i--) {
+      const p = cutParticles[i];
+      p.vy += p.grav * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.life -= dt;
+      if (p.life <= 0) cutParticles.splice(i, 1);
+    }
+    if (cutTime >= DRONE_FLY + EXPLODE_DUR + SETTLE_DUR) state = PLAYING; // resume
+  }
+
+  function drawCutBuilding(g, fade) {
+    ctx.globalAlpha = fade;
+    ctx.fillStyle = "#8a79b6";                                   // tower (foreground)
+    ctx.fillRect(g.bx, g.top, g.bw, g.bottom - g.top);
+    ctx.fillStyle = "#6f5fa0";                                   // shaded side
+    ctx.fillRect(g.bx + g.bw * 0.72, g.top, g.bw * 0.28, g.bottom - g.top);
+    ctx.fillStyle = "#5b4d86";                                   // roof line
+    ctx.fillRect(g.bx, g.top, g.bw, H * 0.014);
+    ctx.fillStyle = "rgba(255,255,255,0.5)";                     // windows
+    const ww = g.bw * 0.13, wh = ww * 1.3;
+    for (let c = 0; c < 4; c++)
+      for (let r = 0; r < 8; r++) {
+        const wy = g.top + H * 0.05 + r * (H * 0.055);
+        if (wy + wh > g.bottom - H * 0.02) break;
+        if (rnd(c * 13 + r * 7 + 3) > 0.25)
+          ctx.fillRect(g.bx + g.bw * (0.13 + c * 0.22), wy, ww, wh);
+      }
+    if (cutExploded) {                                           // scorch crater
+      ctx.fillStyle = "rgba(18,16,20,0.85)";
+      ctx.beginPath(); ctx.arc(g.ix, g.iy, 0.07 * H, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawDrone(t, g) {
+    const p = Math.min(1, t / DRONE_FLY);
+    const ease = p * p;                                          // accelerates into the dive
+    const sx = W * 0.95, sy = -0.12 * H;
+    let x = sx + (g.ix - sx) * ease + Math.sin(t * 23) * (1 - p) * 0.02 * H;
+    let y = sy + (g.iy - sy) * ease + Math.sin(t * 17) * (1 - p) * 0.012 * H;
+    const ang = Math.sin(t * 20) * (1 - p) * 0.28 + ease * 0.9;  // wobble -> tumble
+    const s = 0.10 * H;
+
+    ctx.globalAlpha = 0.22;                                      // failing smoke trail
+    ctx.fillStyle = "#6a6a72";
+    for (let i = 1; i <= 4; i++) {
+      const tp = Math.max(0, ease - i * 0.05);
+      ctx.beginPath();
+      ctx.arc(sx + (g.ix - sx) * tp, sy + (g.iy - sy) * tp, s * (0.2 + i * 0.06), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(ang);
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#3a3a42"; ctx.lineWidth = s * 0.1;        // arms (X)
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.62, -s * 0.42); ctx.lineTo(s * 0.62, s * 0.42);
+    ctx.moveTo(-s * 0.62, s * 0.42); ctx.lineTo(s * 0.62, -s * 0.42);
+    ctx.stroke();
+    const ends = [[-0.62, -0.42], [0.62, 0.42], [-0.62, 0.42], [0.62, -0.42]];
+    for (const e of ends) {                                      // rotors
+      const rx = e[0] * s, ry = e[1] * s;
+      ctx.fillStyle = "#23232a"; ctx.beginPath(); ctx.arc(rx, ry, s * 0.12, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.35)"; ctx.lineWidth = s * 0.04;
+      ctx.beginPath(); ctx.ellipse(rx, ry, s * 0.36, s * 0.06, t * 45 + e[0] + e[1], 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.fillStyle = "#2a2a30";                                   // body
+    roundRectPath(-s * 0.42, -s * 0.28, s * 0.84, s * 0.56, s * 0.16); ctx.fill();
+    ctx.fillStyle = "#ffcc00";                                   // yellow stripe
+    roundRectPath(-s * 0.42, -s * 0.28, s * 0.84, s * 0.18, s * 0.08); ctx.fill();
+    ctx.fillStyle = "#15151a";                                   // camera
+    ctx.beginPath(); ctx.arc(0, s * 0.32, s * 0.12, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#33333a"; ctx.lineWidth = s * 0.03;       // box cords
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.1, s * 0.3); ctx.lineTo(-s * 0.1, s * 0.5);
+    ctx.moveTo(s * 0.1, s * 0.3); ctx.lineTo(s * 0.1, s * 0.5); ctx.stroke();
+    ctx.fillStyle = "#ffcc00";                                   // hanging delivery box
+    roundRectPath(-s * 0.2, s * 0.5, s * 0.4, s * 0.34, s * 0.06); ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.3)"; ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawFireball(x, y, et) {
+    const grow = Math.min(1, et / 0.45);
+    const R = (0.05 + grow * 0.17) * H;
+    const fade = Math.max(0, 1 - Math.max(0, et - 0.2) / (EXPLODE_DUR - 0.2));
+    ctx.globalAlpha = 0.5 * fade;                                // smoke halo
+    ctx.fillStyle = "#43434c";
+    ctx.beginPath(); ctx.arc(x, y, R * 1.2, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = fade;
+    const layers = [["#ff5a2a", 1.0], ["#ff9b2f", 0.7], ["#ffd34d", 0.44], ["#fff6d8", 0.22]];
+    for (const L of layers) {
+      ctx.fillStyle = L[0];
+      ctx.beginPath(); ctx.arc(x, y, R * L[1], 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawCutscene() {
+    const t = cutTime, g = cutGeom(), total = DRONE_FLY + EXPLODE_DUR + SETTLE_DUR;
+
+    let dim = 0.24;                                              // spotlight: dim the frozen scene
+    if (t < 0.3) dim *= t / 0.3;
+    if (t > total - 0.4) dim *= Math.max(0, (total - t) / 0.4);
+    ctx.fillStyle = "rgba(18,16,28," + dim + ")";
+    ctx.fillRect(0, 0, W, H);
+
+    let shx = 0, shy = 0;                                        // screen shake on the blast
+    if (cutExploded) {
+      const mag = Math.max(0, 1 - (t - DRONE_FLY) / 0.45) * H * 0.018;
+      shx = (Math.random() * 2 - 1) * mag;
+      shy = (Math.random() * 2 - 1) * mag;
+    }
+    ctx.save();
+    ctx.translate(shx, shy);
+
+    let bf = 1;
+    if (t < 0.3) bf = t / 0.3;
+    if (t > total - 0.4) bf = Math.max(0, (total - t) / 0.4);
+    drawCutBuilding(g, bf);
+
+    if (t < DRONE_FLY + 0.04) drawDrone(t, g);
+    if (cutExploded) drawFireball(g.ix, g.iy, t - DRONE_FLY);
+
+    for (const p of cutParticles) {                             // debris
+      ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+      ctx.fillStyle = p.col;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+
+    if (cutExploded) {                                          // white impact flash
+      const fa = Math.max(0, 0.9 * (1 - (t - DRONE_FLY) / 0.18));
+      if (fa > 0) { ctx.fillStyle = "rgba(255,250,235," + fa + ")"; ctx.fillRect(0, 0, W, H); }
+    }
   }
 
   // ============================================================
