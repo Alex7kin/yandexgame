@@ -8,6 +8,7 @@ Thumbs.db
 # Node / Cloudflare Worker tooling
 node_modules/
 .wrangler/
+/package-lock.json   # root has no Node project; the bot/ lockfile is tracked
 
 # Local Worker secrets — NEVER commit
 .dev.vars
