@@ -38,19 +38,7 @@
     } catch (_) { /* never let scoring break the game */ }
   }
 
-  // ---------- Sprite sheet ----------
-  // Pre-processed transparent sheet (background colour-keyed out).
-  // Tight per-frame content rectangles, measured from the asset, so the
-  // wheels sit exactly on the road regardless of per-frame padding.
-  const sheet = new Image();
-  let sheetReady = false;
-  const FRAMES = [
-    { sx: 120, sy: 70,  sw: 495, sh: 522 }, // frame 0 (top-left)
-    { sx: 686, sy: 70,  sw: 493, sh: 522 }, // frame 1 (top-right)
-    { sx: 120, sy: 644, sw: 495, sh: 520 }, // frame 2 (bottom-left)
-    { sx: 686, sy: 644, sw: 493, sh: 520 }, // frame 3 (bottom-right)
-  ];
-  const PEDAL_ORDER = [0, 1, 3, 2]; // cycle order for a smooth pedalling loop
+  // The courier is drawn entirely in code (see drawCourier) — no image asset.
 
   // ---------- Tunable design constants (units relative to canvas height H) ----------
   const GROUND_FRAC      = 0.80;  // road surface (wheel contact line)
@@ -83,7 +71,7 @@
   const BARRIER_MAX_H    = 0.115; // max height — kept well under the max jump so it's clearable
 
   // Animation
-  const FRAME_TIME       = 0.10;  // base seconds per pedal frame (scaled by speed)
+  const PEDAL_CADENCE    = 7.5;   // crank radians per second at base speed
 
   // ---------- State ----------
   const READY = 0, PLAYING = 1, GAMEOVER = 2;
@@ -97,7 +85,7 @@
   let restartAllowedAt = 0;
 
   const courier = { y: 0, vy: 0, grounded: true, holding: false, jumpTime: 0 };
-  let frame = 0, animAcc = 0;
+  let pedalPhase = 0;       // radians; drives leg pedaling + wheel spin
 
   let barriers = [];
   let spawnTimer = 0;
@@ -314,9 +302,8 @@
     bldX   -= vis * 0.45 * dt;
     roadX  -= vis * dt;
 
-    // Pedal animation (cadence rises with speed)
-    animAcc += dt * (vis / (BASE_SPEED * H));
-    if (animAcc >= FRAME_TIME) { animAcc -= FRAME_TIME; frame = (frame + 1) % PEDAL_ORDER.length; }
+    // Pedal cadence + wheel spin (rises with speed)
+    pedalPhase += dt * (vis / (BASE_SPEED * H)) * PEDAL_CADENCE;
 
     if (!playing) return;
 
@@ -509,25 +496,186 @@
     ctx.stroke();
   }
 
+  // 2-bone inverse kinematics: knee position given hip, foot and segment lengths.
+  function knee(hx, hy, fx, fy, a, b, bend) {
+    const dx = fx - hx, dy = fy - hy;
+    const d = Math.min(a + b - 1e-4, Math.max(Math.abs(a - b) + 1e-4, Math.hypot(dx, dy)));
+    const base = Math.atan2(dy, dx);
+    const cosA = (a * a + d * d - b * b) / (2 * a * d);
+    const ang = base + bend * Math.acos(Math.min(1, Math.max(-1, cosA)));
+    return { x: hx + a * Math.cos(ang), y: hy + a * Math.sin(ang) };
+  }
+
+  function drawWheel(cx, cy, r, ang) {
+    ctx.lineWidth = r * 0.18;                         // tire
+    ctx.strokeStyle = "#2b2b30";
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = Math.max(1, r * 0.04);            // spokes
+    ctx.strokeStyle = "rgba(70,70,78,0.85)";
+    for (let k = 0; k < 6; k++) {
+      const a = ang + k * (Math.PI / 3);
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + r * 0.78 * Math.cos(a), cy + r * 0.78 * Math.sin(a));
+      ctx.stroke();
+    }
+    ctx.lineWidth = r * 0.06;                          // yellow rim
+    ctx.strokeStyle = "#f4d44d";
+    ctx.beginPath(); ctx.arc(cx, cy, r * 0.82, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = "#2b2b30";                         // hub
+    ctx.beginPath(); ctx.arc(cx, cy, r * 0.12, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // The courier + bike, drawn in code. Origin is the ground-contact point
+  // (courierX, courier.y); everything is sized in units of u = courierH.
   function drawCourier() {
-    if (!sheetReady) return;
-    const f = FRAMES[PEDAL_ORDER[frame]];
-    const scale = courierH / f.sh;
-    const dw = f.sw * scale;
-    const dh = courierH;
-    const dx = courierX - dw / 2;
-    const dy = courier.y - dh; // content bottom (wheels) sits on courier.y
+    const u = courierH;
+    const gx = courierX, gy = courier.y;
 
     // Soft shadow on the road (shrinks as the courier rises)
     const lift = (groundY - courier.y) / (H * 0.30);
     const shA = Math.max(0.06, 0.28 - lift * 0.22);
-    const shW = dw * (0.5 - lift * 0.12);
+    const shW = u * (0.52 - lift * 0.12);
     ctx.fillStyle = "rgba(0,0,0," + shA + ")";
     ctx.beginPath();
-    ctx.ellipse(courierX, groundY + H * 0.012, Math.max(8, shW), Math.max(4, H * 0.014), 0, 0, Math.PI * 2);
+    ctx.ellipse(gx, groundY + H * 0.012, Math.max(8, shW), Math.max(4, H * 0.014), 0, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.drawImage(sheet, f.sx, f.sy, f.sw, f.sh, dx, dy, dw, dh);
+    // Key points
+    const wr     = 0.185 * u;
+    const rearW  = { x: gx - 0.28 * u, y: gy - wr };
+    const frontW = { x: gx + 0.30 * u, y: gy - wr };
+    const bb     = { x: gx + 0.01 * u, y: gy - 0.22 * u };   // crank / bottom bracket
+    const seat   = { x: gx - 0.14 * u, y: gy - 0.50 * u };
+    const head   = { x: gx + 0.34 * u, y: gy - 0.50 * u };   // head tube (front)
+    const hip    = { x: gx - 0.05 * u, y: gy - 0.54 * u };
+    const shldr  = { x: gx + 0.11 * u, y: gy - 0.80 * u };
+    const bar    = { x: gx + 0.40 * u, y: gy - 0.55 * u };   // handlebar
+    const faceC  = { x: gx + 0.20 * u, y: gy - 0.91 * u };
+    const faceR  = 0.105 * u;
+    const crankR = 0.095 * u;
+    const thigh  = 0.27 * u, shin = 0.27 * u;
+    const wheelAng = pedalPhase * 2.4;
+
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    // Pedal positions (180° apart)
+    const pedN = { x: bb.x + crankR * Math.cos(pedalPhase),            y: bb.y + crankR * Math.sin(pedalPhase) };
+    const pedF = { x: bb.x + crankR * Math.cos(pedalPhase + Math.PI),  y: bb.y + crankR * Math.sin(pedalPhase + Math.PI) };
+
+    function leg(foot, pantCol) {
+      const k = knee(hip.x, hip.y, foot.x, foot.y, thigh, shin, -1);
+      ctx.strokeStyle = pantCol;
+      ctx.lineWidth = 0.092 * u;                         // thigh
+      ctx.beginPath(); ctx.moveTo(hip.x, hip.y); ctx.lineTo(k.x, k.y); ctx.stroke();
+      ctx.lineWidth = 0.07 * u;                          // shin
+      ctx.beginPath(); ctx.moveTo(k.x, k.y); ctx.lineTo(foot.x, foot.y); ctx.stroke();
+      ctx.fillStyle = "#1d1d22";                         // shoe
+      ctx.beginPath();
+      ctx.ellipse(foot.x + 0.025 * u, foot.y + 0.006 * u, 0.066 * u, 0.036 * u, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.22)";          // sole highlight
+      ctx.fillRect(foot.x - 0.04 * u, foot.y + 0.028 * u, 0.13 * u, 0.012 * u);
+    }
+
+    // 1) far leg (behind the bike, darker pants)
+    leg(pedF, "#2c3446");
+
+    // 2) bike frame
+    ctx.strokeStyle = "#34343c";
+    ctx.lineWidth = 0.045 * u;
+    ctx.beginPath();
+    ctx.moveTo(bb.x, bb.y);   ctx.lineTo(rearW.x, rearW.y);   // chain stay
+    ctx.moveTo(seat.x, seat.y); ctx.lineTo(rearW.x, rearW.y); // seat stay
+    ctx.moveTo(seat.x, seat.y); ctx.lineTo(bb.x, bb.y);       // seat tube
+    ctx.moveTo(bb.x, bb.y);   ctx.lineTo(head.x, head.y);     // down tube
+    ctx.moveTo(seat.x, seat.y); ctx.lineTo(head.x, head.y);   // top tube
+    ctx.moveTo(head.x, head.y); ctx.lineTo(frontW.x, frontW.y); // fork
+    ctx.moveTo(head.x, head.y); ctx.lineTo(bar.x, bar.y);     // stem to bars
+    ctx.stroke();
+    // saddle
+    ctx.lineWidth = 0.05 * u; ctx.strokeStyle = "#222";
+    ctx.beginPath(); ctx.moveTo(seat.x - 0.06 * u, seat.y); ctx.lineTo(seat.x + 0.05 * u, seat.y - 0.01 * u); ctx.stroke();
+    // chainring + crank arms + pedals
+    ctx.fillStyle = "#26262c";
+    ctx.beginPath(); ctx.arc(bb.x, bb.y, 0.05 * u, 0, Math.PI * 2); ctx.fill();
+    ctx.lineWidth = 0.022 * u; ctx.strokeStyle = "#15151a";
+    ctx.beginPath();
+    ctx.moveTo(bb.x, bb.y); ctx.lineTo(pedN.x, pedN.y);
+    ctx.moveTo(bb.x, bb.y); ctx.lineTo(pedF.x, pedF.y);
+    ctx.stroke();
+    ctx.fillStyle = "#15151a";
+    ctx.fillRect(pedF.x - 0.045 * u, pedF.y - 0.012 * u, 0.09 * u, 0.024 * u);
+    ctx.fillRect(pedN.x - 0.045 * u, pedN.y - 0.012 * u, 0.09 * u, 0.024 * u);
+
+    // 3) wheels
+    drawWheel(rearW.x, rearW.y, wr, wheelAng);
+    drawWheel(frontW.x, frontW.y, wr, wheelAng);
+
+    // 4) delivery backpack (yellow food box) with the swirl logo
+    ctx.save();
+    ctx.translate(gx - 0.115 * u, gy - 0.70 * u);
+    ctx.rotate(-0.12);
+    const bw = 0.27 * u, bh = 0.31 * u;
+    ctx.fillStyle = "#ffcc00";
+    roundRectPath(-bw / 2, -bh / 2, bw, bh, 0.055 * u);
+    ctx.fill();
+    ctx.save();                                          // bottom shading, clipped to box
+    roundRectPath(-bw / 2, -bh / 2, bw, bh, 0.055 * u); ctx.clip();
+    ctx.fillStyle = "rgba(0,0,0,0.10)";
+    ctx.fillRect(-bw / 2, bh * 0.12, bw, bh * 0.4);
+    ctx.restore();
+    ctx.strokeStyle = "rgba(0,0,0,0.32)"; ctx.lineWidth = 0.012 * u;   // outline
+    roundRectPath(-bw / 2, -bh / 2, bw, bh, 0.055 * u); ctx.stroke();
+    // swirl logo (Archimedean spiral, Yandex Eda style)
+    ctx.strokeStyle = "#23232a";
+    ctx.lineWidth = 0.024 * u;
+    ctx.lineCap = "round";
+    const TURNS = 2.6, MAXR = 0.10 * u, ST = 90;
+    ctx.beginPath();
+    for (let i = 0; i <= ST; i++) {
+      const tt = i / ST, a = tt * TURNS * Math.PI * 2, rr = MAXR * tt;
+      const px = Math.cos(a) * rr, py = Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    // 5) torso — single flat colour (clean body)
+    ctx.strokeStyle = "#ffd21e"; ctx.lineWidth = 0.18 * u;
+    ctx.beginPath(); ctx.moveTo(hip.x, hip.y); ctx.lineTo(shldr.x, shldr.y); ctx.stroke();
+
+    // 6) neck + head (ear, face, nose, eye, cap, visor)
+    ctx.strokeStyle = "#e8b58a"; ctx.lineWidth = 0.055 * u;
+    ctx.beginPath(); ctx.moveTo(shldr.x + 0.02 * u, shldr.y); ctx.lineTo(faceC.x - 0.03 * u, faceC.y + faceR * 0.85); ctx.stroke();
+    ctx.fillStyle = "#e3ad7f";                            // ear (peeks behind face)
+    ctx.beginPath(); ctx.arc(faceC.x - faceR * 0.78, faceC.y + faceR * 0.08, faceR * 0.3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#f1c79b";                            // face
+    ctx.beginPath(); ctx.arc(faceC.x, faceC.y, faceR, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(faceC.x + faceR * 0.95, faceC.y + faceR * 0.18, faceR * 0.17, 0, Math.PI * 2); ctx.fill(); // nose
+    ctx.fillStyle = "#2a2a2e";                            // eye
+    ctx.beginPath(); ctx.arc(faceC.x + faceR * 0.42, faceC.y - faceR * 0.04, 0.014 * u, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#ffcc00";                            // cap dome
+    ctx.beginPath(); ctx.arc(faceC.x, faceC.y - faceR * 0.06, faceR * 1.06, Math.PI, 2 * Math.PI); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#f3c200";                            // visor (points forward)
+    ctx.beginPath();
+    ctx.moveTo(faceC.x + faceR * 0.10, faceC.y - faceR * 0.42);
+    ctx.lineTo(faceC.x + faceR * 1.55, faceC.y - faceR * 0.50);
+    ctx.lineTo(faceC.x + faceR * 1.35, faceC.y - faceR * 0.24);
+    ctx.closePath(); ctx.fill();
+
+    // 7) near arm (shoulder -> elbow -> hand), bent at the elbow
+    const elbow = knee(shldr.x, shldr.y, bar.x, bar.y, 0.21 * u, 0.22 * u, 1);
+    ctx.strokeStyle = "#ffd21e"; ctx.lineWidth = 0.072 * u;            // upper sleeve
+    ctx.beginPath(); ctx.moveTo(shldr.x, shldr.y); ctx.lineTo(elbow.x, elbow.y); ctx.stroke();
+    ctx.lineWidth = 0.058 * u;                                         // forearm
+    ctx.beginPath(); ctx.moveTo(elbow.x, elbow.y); ctx.lineTo(bar.x, bar.y); ctx.stroke();
+    ctx.fillStyle = "#2a2a2e";                                         // glove
+    ctx.beginPath(); ctx.arc(bar.x, bar.y, 0.038 * u, 0, Math.PI * 2); ctx.fill();
+
+    // 8) near leg (in front)
+    leg(pedN, "#39435a");
   }
 
   // ============================================================
@@ -554,10 +702,6 @@
     courier.y = groundY;
     requestAnimationFrame(loop);
   }
-
-  sheet.onload = () => { sheetReady = true; };
-  sheet.onerror = () => { console.error("Failed to load sprite sheet images/courier.png"); };
-  sheet.src = "images/courier.png";
 
   boot();
 })();
