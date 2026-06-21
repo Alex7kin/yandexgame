@@ -50,7 +50,7 @@
     { sx: 120, sy: 644, sw: 495, sh: 520 }, // frame 2 (bottom-left)
     { sx: 686, sy: 644, sw: 493, sh: 520 }, // frame 3 (bottom-right)
   ];
-  const PEDAL_ORDER = [0, 1, 2, 3]; // cycle order for a smooth pedalling loop
+  const PEDAL_ORDER = [0, 1, 3, 2]; // cycle order for a smooth pedalling loop
 
   // ---------- Tunable design constants (units relative to canvas height H) ----------
   const GROUND_FRAC      = 0.80;  // road surface (wheel contact line)
