@@ -1,6 +1,6 @@
 /* ============================================================
    Bike Courier — an endless runner (Google Dino-style)
-   A Yandex Eda courier rides a smooth road and jumps potholes.
+   A Yandex Eda courier rides a smooth road and jumps barriers.
    ============================================================ */
 
 (() => {
@@ -36,7 +36,15 @@
 
   // ---------- Tunable design constants (units relative to canvas height H) ----------
   const GROUND_FRAC      = 0.80;  // road surface (wheel contact line)
-  const COURIER_FRAC     = 0.22;  // courier display height
+  const COURIER_FRAC     = 0.22;  // courier display height (landscape reference)
+
+  // Aspect-aware shrink — sprites & obstacles are sized in H units, which makes
+  // them oversized on tall portrait phones (small W, large H) so you can barely
+  // see the road ahead. On narrow screens we scale the courier, barriers and the
+  // jump down together (keeping the same feel) so more of the road is visible.
+  const MOBILE_SCALE     = 0.55;  // actor scale on a tall phone (portrait)
+  const PORTRAIT_ASPECT  = 0.50;  // W/H at/below which the full shrink applies
+  const LANDSCAPE_ASPECT = 0.90;  // W/H at/above which no shrink (desktop) applies
 
   // Jump physics (per-second values multiplied by H so the feel is resolution-independent)
   const JUMP_V0          = 1.30;  // initial upward take-off speed
@@ -50,10 +58,11 @@
   const SPEED_RAMP       = 0.020; // speed added per second of play
   const MAX_SPEED_BONUS  = 1.15;  // cap on the difficulty multiplier (1 + this)
 
-  // Potholes
-  const POTHOLE_MIN_W    = 0.07;  // min width (H units)
-  const POTHOLE_MAX_W    = 0.14;  // max width (H units)
-  const CRASH_CLEARANCE  = 0.02;  // wheels must be lifted this far to clear a hole (H units)
+  // Barriers (road blocks the courier must jump over)
+  const BARRIER_MIN_W    = 0.060; // min width (H units)
+  const BARRIER_MAX_W    = 0.090; // max width (H units)
+  const BARRIER_MIN_H    = 0.070; // min height (H units)
+  const BARRIER_MAX_H    = 0.115; // max height — kept well under the max jump so it's clearable
 
   // Animation
   const FRAME_TIME       = 0.10;  // base seconds per pedal frame (scaled by speed)
@@ -63,6 +72,7 @@
   let state = READY;
 
   let groundY = 0, courierX = 0, courierH = 0, courierW = 0;
+  let actorScale = 1;       // 0..1 multiplier applied to courier, barriers & jump
   let speed = 0, distance = 0, scoreFloat = 0, score = 0;
   let best = parseInt(localStorage.getItem("courier_best") || "0", 10) || 0;
   let nextPointAt = 100;
@@ -71,7 +81,7 @@
   const courier = { y: 0, vy: 0, grounded: true, holding: false, jumpTime: 0 };
   let frame = 0, animAcc = 0;
 
-  let potholes = [];
+  let barriers = [];
   let spawnTimer = 0;
 
   // Parallax offsets (in px, ever-decreasing; wrapped at draw time)
@@ -80,6 +90,13 @@
   // ============================================================
   //  Sizing / responsiveness
   // ============================================================
+  // Full size on landscape; smoothly down to MOBILE_SCALE on a tall phone.
+  function computeActorScale() {
+    const aspect = W / H;
+    const t = Math.min(1, Math.max(0, (aspect - PORTRAIT_ASPECT) / (LANDSCAPE_ASPECT - PORTRAIT_ASPECT)));
+    return MOBILE_SCALE + (1 - MOBILE_SCALE) * t;
+  }
+
   function resize() {
     DPR = Math.min(window.devicePixelRatio || 1, 2);
     W = window.innerWidth || document.documentElement.clientWidth || 800;
@@ -90,8 +107,9 @@
     canvas.style.height = H + "px";
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
 
+    actorScale = computeActorScale();
     groundY = H * GROUND_FRAC;
-    courierH = H * COURIER_FRAC;
+    courierH = H * COURIER_FRAC * actorScale;
     courierW = courierH * 0.95;
     courierX = Math.max(W * 0.18, 78);
 
@@ -159,7 +177,7 @@
     }
 
     if (state === PLAYING && courier.grounded) {
-      courier.vy = -JUMP_V0 * H;
+      courier.vy = -JUMP_V0 * H * actorScale;
       courier.grounded = false;
       courier.holding = true;
       courier.jumpTime = 0;
@@ -170,7 +188,7 @@
   function releaseJump() {
     courier.holding = false;
     // Early release => trim upward velocity for a shorter hop (capped max height stays via MAX_HOLD).
-    if (!courier.grounded && courier.vy < -JUMP_CUT * H) courier.vy = -JUMP_CUT * H;
+    if (!courier.grounded && courier.vy < -JUMP_CUT * H * actorScale) courier.vy = -JUMP_CUT * H * actorScale;
   }
 
   // Keyboard (desktop)
@@ -208,8 +226,8 @@
     scoreFloat = 0;
     score = 0;
     nextPointAt = 100;
-    potholes = [];
-    spawnTimer = 0.6; // brief grace before the first pothole
+    barriers = [];
+    spawnTimer = 0.6; // brief grace before the first barrier
     courier.y = groundY;
     courier.vy = 0;
     courier.grounded = true;
@@ -239,11 +257,12 @@
   }
 
   // ============================================================
-  //  Potholes
+  //  Barriers
   // ============================================================
-  function spawnPothole() {
-    const w = (POTHOLE_MIN_W + Math.random() * (POTHOLE_MAX_W - POTHOLE_MIN_W)) * H;
-    potholes.push({ x: W + 40, w: w, h: w * 0.18 });
+  function spawnBarrier() {
+    const w = (BARRIER_MIN_W + Math.random() * (BARRIER_MAX_W - BARRIER_MIN_W)) * H * actorScale;
+    const h = (BARRIER_MIN_H + Math.random() * (BARRIER_MAX_H - BARRIER_MIN_H)) * H * actorScale;
+    barriers.push({ x: W + 40, w: w, h: h });
   }
 
   function nextSpawnInterval() {
@@ -286,7 +305,7 @@
     if (!courier.grounded) {
       const rising = courier.vy < 0;
       const g = (courier.holding && rising && courier.jumpTime < MAX_HOLD) ? GRAVITY_HOLD : GRAVITY;
-      courier.vy += g * H * dt;
+      courier.vy += g * H * actorScale * dt;
       courier.y += courier.vy * dt;
       courier.jumpTime += dt;
       if (courier.y >= groundY) {
@@ -297,22 +316,20 @@
       }
     }
 
-    // Potholes: spawn, move, cull
+    // Barriers: spawn, move, cull
     spawnTimer -= dt;
-    if (spawnTimer <= 0) { spawnPothole(); spawnTimer = nextSpawnInterval(); }
-    for (let i = potholes.length - 1; i >= 0; i--) {
-      potholes[i].x -= speed * dt;
-      if (potholes[i].x + potholes[i].w < -60) potholes.splice(i, 1);
+    if (spawnTimer <= 0) { spawnBarrier(); spawnTimer = nextSpawnInterval(); }
+    for (let i = barriers.length - 1; i >= 0; i--) {
+      barriers[i].x -= speed * dt;
+      if (barriers[i].x + barriers[i].w < -60) barriers.splice(i, 1);
     }
 
-    // Collision: crash if the footprint overlaps a hole while the wheels are not lifted enough.
+    // Collision: crash if the footprint overlaps a barrier the wheels haven't cleared.
     const lifted = groundY - courier.y;
-    if (lifted < CRASH_CLEARANCE * H) {
-      const footL = courierX - courierW * 0.24;
-      const footR = courierX + courierW * 0.30;
-      for (const p of potholes) {
-        if (footR > p.x && footL < p.x + p.w) { gameOver(); break; }
-      }
+    const footL = courierX - courierW * 0.24;
+    const footR = courierX + courierW * 0.30;
+    for (const b of barriers) {
+      if (footR > b.x && footL < b.x + b.w && lifted < b.h) { gameOver(); break; }
     }
 
     // Score
@@ -331,7 +348,7 @@
     drawClouds();
     drawBuildings();
     drawRoad();
-    for (const p of potholes) drawPothole(p);
+    for (const b of barriers) drawBarrier(b);
     drawCourier();
   }
 
@@ -422,25 +439,54 @@
     for (; x < W; x += dash + gapd) ctx.fillRect(x, dashY, dash, Math.max(3, H * 0.008));
   }
 
-  function drawPothole(p) {
-    const cx = p.x + p.w / 2;
-    const cy = groundY + p.h;      // top edge of the hole flush with the road surface
-    const rx = p.w / 2;
-    // Hole
-    ctx.fillStyle = "#141418";
+  // Rounded-rectangle path (no fill/stroke); used by the barrier.
+  function roundRectPath(x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
     ctx.beginPath();
-    ctx.ellipse(cx, cy, rx, p.h, 0, 0, Math.PI * 2);
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y,     x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x,     y + h, r);
+    ctx.arcTo(x,     y + h, x,     y,     r);
+    ctx.arcTo(x,     y,     x + w, y,     r);
+    ctx.closePath();
+  }
+
+  function drawBarrier(b) {
+    const top = groundY - b.h;
+    const r = Math.min(8, b.w * 0.22);
+
+    // Contact shadow on the road
+    ctx.fillStyle = "rgba(0,0,0,0.20)";
+    ctx.beginPath();
+    ctx.ellipse(b.x + b.w / 2, groundY + H * 0.006, b.w * 0.62, Math.max(3, H * 0.010), 0, 0, Math.PI * 2);
     ctx.fill();
-    // Inner depth
-    ctx.fillStyle = "#020203";
-    ctx.beginPath();
-    ctx.ellipse(cx, cy + p.h * 0.25, rx * 0.78, p.h * 0.78, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // Rim highlight (top arc)
-    ctx.strokeStyle = "rgba(255,255,255,0.16)";
-    ctx.lineWidth = Math.max(1.5, H * 0.004);
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, rx, p.h, 0, Math.PI, Math.PI * 2);
+
+    // Body with diagonal hazard stripes, clipped to a rounded rect (= the solid hit-box)
+    ctx.save();
+    roundRectPath(b.x, top, b.w, b.h, r);
+    ctx.clip();
+    ctx.fillStyle = "#f4d44d";                  // yellow base
+    ctx.fillRect(b.x, top, b.w, b.h);
+    ctx.fillStyle = "#2a2a2e";                  // dark hazard stripes (45°)
+    const sw = b.h * 0.55;                       // stripe slant width
+    for (let sx = b.x - b.h; sx < b.x + b.w + b.h; sx += sw * 2) {
+      ctx.beginPath();
+      ctx.moveTo(sx,           groundY);
+      ctx.lineTo(sx + sw,      groundY);
+      ctx.lineTo(sx + sw + b.h, top);
+      ctx.lineTo(sx + b.h,      top);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // Darker base where it meets the road
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
+    ctx.fillRect(b.x, groundY - b.h * 0.14, b.w, b.h * 0.14);
+    ctx.restore();
+
+    // Outline
+    ctx.strokeStyle = "rgba(0,0,0,0.40)";
+    ctx.lineWidth = Math.max(1.5, H * 0.0035);
+    roundRectPath(b.x, top, b.w, b.h, r);
     ctx.stroke();
   }
 
