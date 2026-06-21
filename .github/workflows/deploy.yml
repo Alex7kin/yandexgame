@@ -1,0 +1,42 @@
+name: Deploy game to GitHub Pages
+
+# Publishes the static game to the gh-pages branch (which GitHub Pages serves).
+# Runs when game files change on main, or manually from the Actions tab.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "index.html"
+      - "style.css"
+      - "game.js"
+      - "images/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+# Let the run's token push to the gh-pages branch.
+permissions:
+  contents: write
+
+# Don't let two deploys run at once.
+concurrency:
+  group: deploy-gh-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: .
+          # Keep gh-pages to just the game — the bot backend stays on main.
+          exclude_assets: ".github,bot,.gitignore"
+          commit_message: "deploy: ${{ github.sha }}"
+          user_name: "github-actions[bot]"
+          user_email: "github-actions[bot]@users.noreply.github.com"
