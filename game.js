@@ -20,6 +20,24 @@
   const elFinalBest = document.getElementById("finalBest");
   const muteBtn = document.getElementById("mute");
 
+  // ---------- Telegram Games integration ----------
+  // When launched from the bot, the Worker appends a signed identity token (t)
+  // and its own URL (b). Outside Telegram these are absent and scoring is skipped.
+  const tgParams  = new URLSearchParams(location.search);
+  const TG_TOKEN  = tgParams.get("t");
+  const TG_BACKEND = (tgParams.get("b") || "").replace(/\/+$/, "");
+  function submitScore(s) {
+    if (!TG_TOKEN || !TG_BACKEND || !(s > 0)) return;
+    try {
+      fetch(TG_BACKEND + "/score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ t: TG_TOKEN, score: s }),
+        keepalive: true, // let it complete even if the webview is closing
+      }).catch(() => {});
+    } catch (_) { /* never let scoring break the game */ }
+  }
+
   // ---------- Sprite sheet ----------
   // Pre-processed transparent sheet (background colour-keyed out).
   // Tight per-frame content rectangles, measured from the asset, so the
@@ -247,6 +265,7 @@
     elFinalScore.textContent = score;
     elFinalBest.textContent = best;
     updateHUD();
+    submitScore(score); // record on Telegram's leaderboard (no-op outside the bot)
     gameOverScreen.classList.remove("hidden");
     restartAllowedAt = performance.now() + 450; // debounce so the crashing press doesn't instantly restart
   }

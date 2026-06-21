@@ -4,3 +4,11 @@
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# Node / Cloudflare Worker tooling
+node_modules/
+.wrangler/
+
+# Local Worker secrets — NEVER commit
+.dev.vars
+*.dev.vars

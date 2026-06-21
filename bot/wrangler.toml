@@ -1,0 +1,11 @@
+name = "yandexgame-bot"
+main = "src/worker.js"
+compatibility_date = "2024-11-01"
+
+# Non-secret config. Secrets (BOT_TOKEN, SIGNING_SECRET, WEBHOOK_SECRET) are set
+# with `wrangler secret put <NAME>` — never commit them.
+[vars]
+GAME_SHORT_NAME = "bikecourier"                       # must match the short name set in @BotFather /newgame
+GAME_URL        = "https://alex7kin.github.io/yandexgame/"
+ALLOWED_ORIGIN  = "https://alex7kin.github.io"         # the game's origin (for CORS on /score)
+BOT_USERNAME    = "yandexGame0_0bot"
