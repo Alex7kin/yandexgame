@@ -1,6 +1,6 @@
 /* ============================================================
    Bike Courier — an endless runner (Google Dino-style)
-   A Yandex Eda courier rides a smooth road and jumps barriers.
+   A Yandex Eda courier rides the road, jumping onto multi-level railings.
    ============================================================ */
 
 (() => {
@@ -47,7 +47,7 @@
 
   // Aspect-aware shrink — sprites & obstacles are sized in H units, which makes
   // them oversized on tall portrait phones (small W, large H) so you can barely
-  // see the road ahead. On narrow screens we scale the courier, barriers and the
+  // see the road ahead. On narrow screens we scale the courier, railings and the
   // jump down together (keeping the same feel) so more of the road is visible.
   const MOBILE_SCALE     = 0.55;  // actor scale on a tall phone (portrait)
   const PORTRAIT_ASPECT  = 0.50;  // W/H at/below which the full shrink applies
@@ -65,11 +65,13 @@
   const SPEED_RAMP       = 0.020; // speed added per second of play
   const MAX_SPEED_BONUS  = 1.15;  // cap on the difficulty multiplier (1 + this)
 
-  // Barriers (road blocks the courier must jump over)
-  const BARRIER_MIN_W    = 0.060; // min width (H units)
-  const BARRIER_MAX_W    = 0.090; // max width (H units)
-  const BARRIER_MIN_H    = 0.070; // min height (H units)
-  const BARRIER_MAX_H    = 0.115; // max height — kept well under the max jump so it's clearable
+  // Railings — elevated ledges you jump ONTO and ride along the top; ram the
+  // front (left) face and you crash. Multi-level: each spawns at a random height.
+  const RAIL_MIN_W     = 0.55;              // length (H units) — "long"
+  const RAIL_MAX_W     = 1.20;
+  const RAIL_LEVELS    = [0.09, 0.155, 0.22]; // top height above the road (H units, pre-scale)
+  const RAIL_GAP       = 0.55;              // clear ground (H units) between consecutive railings
+  const RAIL_CRASH_TOL = 0.02;              // feet this far below the top still count as "on top"
 
   // Animation
   const PEDAL_CADENCE    = 7.5;   // crank radians per second at base speed
@@ -85,7 +87,7 @@
   let state = READY;
 
   let groundY = 0, courierX = 0, courierH = 0, courierW = 0;
-  let actorScale = 1;       // 0..1 multiplier applied to courier, barriers & jump
+  let actorScale = 1;       // 0..1 multiplier applied to courier, railings & jump
   let speed = 0, distance = 0, scoreFloat = 0, score = 0;
   let best = parseInt(localStorage.getItem("courier_best") || "0", 10) || 0;
   let nextPointAt = 100;
@@ -94,7 +96,7 @@
   const courier = { y: 0, vy: 0, grounded: true, holding: false, jumpTime: 0 };
   let pedalPhase = 0;       // radians; drives leg pedaling + wheel spin
 
-  let barriers = [];
+  let rails = [];
   let spawnTimer = 0;
 
   // Parallax offsets (in px, ever-decreasing; wrapped at draw time)
@@ -344,8 +346,8 @@
     score = 0;
     nextPointAt = 100;
     droneDone = false;
-    barriers = [];
-    spawnTimer = 0.6; // brief grace before the first barrier
+    rails = [];
+    spawnTimer = 0.8; // brief grace before the first railing
     courier.y = groundY;
     courier.vy = 0;
     courier.grounded = true;
@@ -376,18 +378,15 @@
   }
 
   // ============================================================
-  //  Barriers
+  //  Railings
   // ============================================================
-  function spawnBarrier() {
-    const w = (BARRIER_MIN_W + Math.random() * (BARRIER_MAX_W - BARRIER_MIN_W)) * H * actorScale;
-    const h = (BARRIER_MIN_H + Math.random() * (BARRIER_MAX_H - BARRIER_MIN_H)) * H * actorScale;
-    barriers.push({ x: W + 40, w: w, h: h });
-  }
-
-  function nextSpawnInterval() {
-    // Constant *spatial* gap (scaled by current speed) => always clearable, harder as speed rises.
-    const base = (2.0 + Math.random() * 1.4) * (BASE_SPEED * H);
-    return base / speed;
+  // Spawn one railing at a random level, then schedule the next so a clear stretch
+  // of road (RAIL_GAP) follows it — at most one railing is ever above the courier.
+  function spawnRail() {
+    const w = (RAIL_MIN_W + Math.random() * (RAIL_MAX_W - RAIL_MIN_W)) * H * actorScale;
+    const level = RAIL_LEVELS[(Math.random() * RAIL_LEVELS.length) | 0];
+    rails.push({ x: W + 40, prevX: W + 40, w: w, top: groundY - level * H * actorScale });
+    spawnTimer = (w + RAIL_GAP * H * actorScale) / speed;
   }
 
   // ============================================================
@@ -421,35 +420,50 @@
 
     if (!playing) return;
 
-    // Courier physics — variable-height jump
+    // Railings: spawn, move, cull
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) spawnRail();
+    for (let i = rails.length - 1; i >= 0; i--) {
+      rails[i].prevX = rails[i].x;
+      rails[i].x -= speed * dt;
+      if (rails[i].x + rails[i].w < -60) rails.splice(i, 1);
+    }
+
+    // Courier physics — variable-height jump, landing on the road or a railing top.
+    const prevFeet = courier.y;
     if (!courier.grounded) {
       const rising = courier.vy < 0;
       const g = (courier.holding && rising && courier.jumpTime < MAX_HOLD) ? GRAVITY_HOLD : GRAVITY;
       courier.vy += g * H * actorScale * dt;
       courier.y += courier.vy * dt;
       courier.jumpTime += dt;
-      if (courier.y >= groundY) {
-        courier.y = groundY;
-        courier.vy = 0;
-        courier.grounded = true;
-        courier.holding = false;
+    }
+
+    // Floor under the courier: the road, or a railing top it's descending onto
+    // (one-way — only landable from at/above its surface).
+    let surface = groundY;
+    for (const r of rails) {
+      if (courierX > r.x && courierX < r.x + r.w && r.top < surface && prevFeet <= r.top + 1) {
+        surface = r.top;
       }
     }
-
-    // Barriers: spawn, move, cull
-    spawnTimer -= dt;
-    if (spawnTimer <= 0) { spawnBarrier(); spawnTimer = nextSpawnInterval(); }
-    for (let i = barriers.length - 1; i >= 0; i--) {
-      barriers[i].x -= speed * dt;
-      if (barriers[i].x + barriers[i].w < -60) barriers.splice(i, 1);
+    if (courier.vy >= 0 && courier.y >= surface) {   // resting on / landing on the surface
+      courier.y = surface;
+      courier.vy = 0;
+      courier.grounded = true;
+      courier.holding = false;
+    } else {
+      courier.grounded = false;                       // rising, or ran off the end of a railing
     }
 
-    // Collision: crash if the footprint overlaps a barrier the wheels haven't cleared.
-    const lifted = groundY - courier.y;
-    const footL = courierX - courierW * 0.24;
+    // Crash: ram the front (left) face — the courier's nose is past a railing's left
+    // edge while its centre hasn't reached it yet and its wheels are below the top.
     const footR = courierX + courierW * 0.30;
-    for (const b of barriers) {
-      if (footR > b.x && footL < b.x + b.w && lifted < b.h) { gameOver(); break; }
+    const tol = RAIL_CRASH_TOL * H * actorScale;
+    for (const r of rails) {
+      // the railing's front edge swept past the courier's nose this frame, with the
+      // wheels still below the top => rammed the side (robust to large dt / low FPS).
+      if (r.prevX >= footR && r.x < footR && courier.y > r.top + tol) { gameOver(); break; }
     }
 
     // Score
@@ -469,7 +483,7 @@
     drawClouds();
     drawBuildings();
     drawRoad();
-    for (const b of barriers) drawBarrier(b);
+    for (const r of rails) drawRail(r);
     drawCourier();
     if (state === CUTSCENE) drawCutscene();
   }
@@ -561,7 +575,7 @@
     for (; x < W; x += dash + gapd) ctx.fillRect(x, dashY, dash, Math.max(3, H * 0.008));
   }
 
-  // Rounded-rectangle path (no fill/stroke); used by the barrier.
+  // Rounded-rectangle path (no fill/stroke); used by the drone & its box.
   function roundRectPath(x, y, w, h, r) {
     r = Math.min(r, w / 2, h / 2);
     ctx.beginPath();
@@ -573,43 +587,36 @@
     ctx.closePath();
   }
 
-  function drawBarrier(b) {
-    const top = groundY - b.h;
-    const r = Math.min(8, b.w * 0.22);
+  // An elevated railing: a solid ledge from its top down to the road, with a
+  // bright top bar you ride on. The left face is the side you crash into.
+  function drawRail(r) {
+    const top = r.top, h = groundY - top, x = r.x, w = r.w;
 
-    // Contact shadow on the road
-    ctx.fillStyle = "rgba(0,0,0,0.20)";
-    ctx.beginPath();
-    ctx.ellipse(b.x + b.w / 2, groundY + H * 0.006, b.w * 0.62, Math.max(3, H * 0.010), 0, 0, Math.PI * 2);
-    ctx.fill();
+    // Ledge body (solid — this is the hit-box)
+    const g = ctx.createLinearGradient(0, top, 0, groundY);
+    g.addColorStop(0, "#7b8089");
+    g.addColorStop(1, "#565a63");
+    ctx.fillStyle = g;
+    ctx.fillRect(x, top, w, h);
 
-    // Body with diagonal hazard stripes, clipped to a rounded rect (= the solid hit-box)
-    ctx.save();
-    roundRectPath(b.x, top, b.w, b.h, r);
-    ctx.clip();
-    ctx.fillStyle = "#f4d44d";                  // yellow base
-    ctx.fillRect(b.x, top, b.w, b.h);
-    ctx.fillStyle = "#2a2a2e";                  // dark hazard stripes (45°)
-    const sw = b.h * 0.55;                       // stripe slant width
-    for (let sx = b.x - b.h; sx < b.x + b.w + b.h; sx += sw * 2) {
-      ctx.beginPath();
-      ctx.moveTo(sx,           groundY);
-      ctx.lineTo(sx + sw,      groundY);
-      ctx.lineTo(sx + sw + b.h, top);
-      ctx.lineTo(sx + b.h,      top);
-      ctx.closePath();
-      ctx.fill();
-    }
-    // Darker base where it meets the road
-    ctx.fillStyle = "rgba(0,0,0,0.28)";
-    ctx.fillRect(b.x, groundY - b.h * 0.14, b.w, b.h * 0.14);
-    ctx.restore();
+    // Vertical support posts
+    ctx.fillStyle = "rgba(0,0,0,0.10)";
+    const postW = Math.max(2, 0.012 * H * actorScale);
+    const postGap = 0.18 * H * actorScale;
+    for (let px = x + postGap * 0.6; px < x + w - postW; px += postGap) ctx.fillRect(px, top, postW, h);
 
-    // Outline
-    ctx.strokeStyle = "rgba(0,0,0,0.40)";
-    ctx.lineWidth = Math.max(1.5, H * 0.0035);
-    roundRectPath(b.x, top, b.w, b.h, r);
-    ctx.stroke();
+    // Front (left) face — the side you crash into
+    ctx.fillStyle = "rgba(0,0,0,0.30)";
+    ctx.fillRect(x, top, Math.max(2, 0.014 * H * actorScale), h);
+
+    // Bright top rail (the surface you ride)
+    const barH = Math.max(3, 0.032 * H * actorScale);
+    ctx.fillStyle = "#f4d44d";
+    ctx.fillRect(x, top, w, barH);
+    ctx.fillStyle = "rgba(255,255,255,0.40)";
+    ctx.fillRect(x, top, w, Math.max(1, barH * 0.32));      // highlight
+    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    ctx.fillRect(x, top + barH, w, Math.max(1, barH * 0.25)); // shade under the bar
   }
 
   // 2-bone inverse kinematics: knee position given hip, foot and segment lengths.
@@ -648,14 +655,21 @@
     const u = courierH;
     const gx = courierX, gy = courier.y;
 
-    // Soft shadow on the road (shrinks as the courier rises)
-    const lift = (groundY - courier.y) / (H * 0.30);
-    const shA = Math.max(0.06, 0.28 - lift * 0.22);
-    const shW = u * (0.52 - lift * 0.12);
-    ctx.fillStyle = "rgba(0,0,0," + shA + ")";
-    ctx.beginPath();
-    ctx.ellipse(gx, groundY + H * 0.012, Math.max(8, shW), Math.max(4, H * 0.014), 0, 0, Math.PI * 2);
-    ctx.fill();
+    // Shadow: right under the wheels when riding a surface (road or railing);
+    // a fainter one cast on the road below while airborne.
+    if (courier.grounded) {
+      ctx.fillStyle = "rgba(0,0,0,0.26)";
+      ctx.beginPath();
+      ctx.ellipse(gx, gy + H * 0.012, u * 0.52, Math.max(4, H * 0.013), 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const lift = (groundY - courier.y) / (H * 0.30);
+      const shA = Math.max(0.05, 0.22 - lift * 0.18);
+      ctx.fillStyle = "rgba(0,0,0," + shA + ")";
+      ctx.beginPath();
+      ctx.ellipse(gx, groundY + H * 0.012, Math.max(8, u * (0.5 - lift * 0.12)), Math.max(3, H * 0.012), 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     // Key points
     const wr     = 0.185 * u;
