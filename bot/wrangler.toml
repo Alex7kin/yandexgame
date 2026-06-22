@@ -9,3 +9,4 @@ GAME_SHORT_NAME = "bikecourier"                       # must match the short nam
 GAME_URL        = "https://alex7kin.github.io/yandexgame/"
 ALLOWED_ORIGIN  = "https://alex7kin.github.io"         # the game's origin (for CORS on /score)
 BOT_USERNAME    = "yandexGame0_0bot"
+OWNER_ID        = ""                                   # your Telegram user id — only this user may run /reset (DM the bot to learn yours)

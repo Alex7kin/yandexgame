@@ -69,6 +69,11 @@ async function handleUpdate(update, env, selfOrigin) {
 async function onMessage(msg, env) {
   const text = (msg.text || "").trim();
 
+  // Owner-only leaderboard reset (gated by user id, not chat-admin status).
+  if (/^\/reset(@\w+)?(\s|$)/.test(text)) {
+    return onReset(msg, env);
+  }
+
   // Only /play or /start (optionally addressed as /play@botname) launches the game.
   if (/^\/(start|play)(@\w+)?(\s|$)/.test(text)) {
     return tg(env, "sendGame", { chat_id: msg.chat.id, game_short_name: env.GAME_SHORT_NAME });
@@ -84,9 +89,55 @@ async function onMessage(msg, env) {
         "🚴 Bike Courier\n\n" +
         "Send /play to play and set your high score.\n" +
         "Type " + uname + " in any chat to challenge your friends — everyone who plays " +
-        "from the same message shares one leaderboard.",
+        "from the same message shares one leaderboard.\n\n" +
+        "Your Telegram ID: " + (msg.from ? msg.from.id : "?") +
+        "  (set this as OWNER_ID to enable /reset)",
     });
   }
+}
+
+// Owner-only: clear a game's leaderboard. The owner REPLIES to the game message
+// with /reset; every player on that board is force-set back to 0. Telegram has no
+// "wipe board" call and refuses to lower a score unless force:true is passed.
+async function onReset(msg, env) {
+  // Strict identity gate — anyone who isn't the owner gets no response at all,
+  // so the command is effectively invisible to the rest of the chat.
+  if (!env.OWNER_ID || !msg.from || String(msg.from.id) !== String(env.OWNER_ID)) {
+    return;
+  }
+
+  const reply = msg.reply_to_message;
+  if (!reply) {
+    return tg(env, "sendMessage", {
+      chat_id: msg.chat.id,
+      reply_to_message_id: msg.message_id,
+      text: "Reply to the game message with /reset to clear that leaderboard.",
+    });
+  }
+
+  const chat_id = msg.chat.id;
+  const message_id = reply.message_id;
+
+  // Ask Telegram who's on this board (the requester + their neighbours — enough
+  // to cover a friends-sized chat). Then drive every score to 0.
+  const hs = await tg(env, "getGameHighScores", { user_id: msg.from.id, chat_id, message_id });
+  const scores = hs && hs.ok && Array.isArray(hs.result) ? hs.result : [];
+
+  let cleared = 0;
+  for (const row of scores) {
+    const r = await tg(env, "setGameScore", {
+      user_id: row.user.id, score: 0, force: true, chat_id, message_id,
+    });
+    if (r.ok) cleared++;
+  }
+
+  return tg(env, "sendMessage", {
+    chat_id,
+    reply_to_message_id: msg.message_id,
+    text: cleared
+      ? `✅ Leaderboard reset (${cleared} player${cleared === 1 ? "" : "s"} zeroed).`
+      : "Nothing to reset on that message — make sure you replied to the game post.",
+  });
 }
 
 // Play button tapped -> answer with the game URL (carrying a signed identity token
