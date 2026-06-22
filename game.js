@@ -74,7 +74,7 @@
   const PEDAL_CADENCE    = 7.5;   // crank radians per second at base speed
 
   // Drone-crash cutscene (one-off spectacle)
-  const DRONE_AT         = 300;  // score that triggers it
+  const DRONE_AT         = 11000;  // score that triggers it
   const DRONE_FLY        = 1.4;   // seconds the drone dives before impact
   const EXPLODE_DUR      = 1.1;   // explosion / fireball duration
   const SETTLE_DUR       = 0.6;   // smoke settle before play resumes
