@@ -11,6 +11,7 @@
   const ctx = canvas.getContext("2d");
   const stage = document.getElementById("stage");
   let W = 0, H = 0, DPR = 1;
+  let skyGrad = null, roadGrad = null;   // full-frame gradients, rebuilt on resize
 
   // ---------- DOM ----------
   const elScore = document.getElementById("score");
@@ -43,15 +44,13 @@
 
   // ---------- Tunable design constants (units relative to canvas height H) ----------
   const GROUND_FRAC      = 0.80;  // road surface (wheel contact line)
-  const COURIER_FRAC     = 0.22;  // courier display height (landscape reference)
+  const COURIER_FRAC     = 0.22;  // courier display height (before ACTOR_SCALE)
 
-  // Aspect-aware shrink — sprites & obstacles are sized in H units, which makes
-  // them oversized on tall portrait phones (small W, large H) so you can barely
-  // see the road ahead. On narrow screens we scale the courier, railings and the
-  // jump down together (keeping the same feel) so more of the road is visible.
-  const MOBILE_SCALE     = 0.55;  // actor scale on a tall phone (portrait)
-  const PORTRAIT_ASPECT  = 0.50;  // W/H at/below which the full shrink applies
-  const LANDSCAPE_ASPECT = 0.90;  // W/H at/above which no shrink (desktop) applies
+  // The game is portrait-locked (~0.5 aspect) on every device — touch devices are
+  // locked out of landscape and desktop renders inside a portrait frame — so one
+  // scale keeps the courier, railings and jump sized for that frame. (Sprites are
+  // measured in H units, which would otherwise look oversized on a tall screen.)
+  const ACTOR_SCALE      = 0.55;
 
   // Jump physics (per-second values multiplied by H so the feel is resolution-independent)
   const JUMP_V0          = 1.30;  // initial upward take-off speed
@@ -87,7 +86,7 @@
   let state = READY;
 
   let groundY = 0, courierX = 0, courierH = 0, courierW = 0;
-  let actorScale = 1;       // 0..1 multiplier applied to courier, railings & jump
+  let actorScale = ACTOR_SCALE;  // multiplier applied to courier, railings & jump
   let speed = 0, distance = 0, scoreFloat = 0, score = 0;
   let best = parseInt(localStorage.getItem("courier_best") || "0", 10) || 0;
   let nextPointAt = 100;
@@ -115,13 +114,6 @@
   const portraitLock = window.matchMedia("(orientation: landscape) and (pointer: coarse)");
   const PORTRAIT_RATIO = 0.5;   // desktop renders the game in this W:H portrait frame (≈ a phone)
 
-  // Full size on landscape; smoothly down to MOBILE_SCALE on a tall phone.
-  function computeActorScale() {
-    const aspect = W / H;
-    const t = Math.min(1, Math.max(0, (aspect - PORTRAIT_ASPECT) / (LANDSCAPE_ASPECT - PORTRAIT_ASPECT)));
-    return MOBILE_SCALE + (1 - MOBILE_SCALE) * t;
-  }
-
   function resize() {
     DPR = Math.min(window.devicePixelRatio || 1, 2);
     const winW = window.innerWidth || document.documentElement.clientWidth || 800;
@@ -143,11 +135,19 @@
     canvas.height = Math.round(H * DPR);
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
 
-    actorScale = computeActorScale();
     groundY = H * GROUND_FRAC;
     courierH = H * COURIER_FRAC * actorScale;
     courierW = courierH * 0.95;
     courierX = Math.max(W * 0.18, 78);
+
+    // Cache the full-frame gradients — they only change when the canvas resizes.
+    skyGrad = ctx.createLinearGradient(0, 0, 0, groundY);
+    skyGrad.addColorStop(0, "#9ad9ff");
+    skyGrad.addColorStop(0.7, "#cdeeff");
+    skyGrad.addColorStop(1, "#fdf3cf");
+    roadGrad = ctx.createLinearGradient(0, groundY, 0, H);
+    roadGrad.addColorStop(0, "#4c4c55");
+    roadGrad.addColorStop(1, "#2c2c32");
 
     if (courier.grounded) courier.y = groundY;
     else courier.y = Math.min(courier.y, groundY);
@@ -489,11 +489,7 @@
   }
 
   function drawSky() {
-    const g = ctx.createLinearGradient(0, 0, 0, groundY);
-    g.addColorStop(0, "#9ad9ff");
-    g.addColorStop(0.7, "#cdeeff");
-    g.addColorStop(1, "#fdf3cf");
-    ctx.fillStyle = g;
+    ctx.fillStyle = skyGrad;
     ctx.fillRect(0, 0, W, groundY);
 
     // Sun
@@ -556,10 +552,7 @@
 
   function drawRoad() {
     // Asphalt
-    const g = ctx.createLinearGradient(0, groundY, 0, H);
-    g.addColorStop(0, "#4c4c55");
-    g.addColorStop(1, "#2c2c32");
-    ctx.fillStyle = g;
+    ctx.fillStyle = roadGrad;
     ctx.fillRect(0, groundY, W, H - groundY);
 
     // Road-surface highlight
