@@ -89,9 +89,7 @@ async function onMessage(msg, env) {
         "🚴 Bike Courier\n\n" +
         "Send /play to play and set your high score.\n" +
         "Type " + uname + " in any chat to challenge your friends — everyone who plays " +
-        "from the same message shares one leaderboard.\n\n" +
-        "Your Telegram ID: " + (msg.from ? msg.from.id : "?") +
-        "  (set this as OWNER_ID to enable /reset)",
+        "from the same message shares one leaderboard.\n\n"
     });
   }
 }
