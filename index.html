@@ -9,6 +9,8 @@
 </head>
 <body>
   <div id="app">
+    <!-- Play area: fills the screen on touch devices, a portrait frame on desktop -->
+    <div id="stage">
     <canvas id="game"></canvas>
 
     <!-- Heads-up display -->
@@ -39,6 +41,13 @@
         <p class="score-line">Best <b id="finalBest">0</b></p>
         <p class="cta"><b>Space</b> / <b>Tap</b> to retry</p>
       </div>
+    </div>
+    </div><!-- /stage -->
+
+    <!-- Portrait lock — full window; shown only on touch devices held in landscape -->
+    <div id="rotate">
+      <div class="rotate-phone">📱</div>
+      <p>Please rotate your device to <b>portrait</b> to play.</p>
     </div>
   </div>
 

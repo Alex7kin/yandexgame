@@ -9,6 +9,7 @@
   // ---------- Canvas ----------
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
+  const stage = document.getElementById("stage");
   let W = 0, H = 0, DPR = 1;
 
   // ---------- DOM ----------
@@ -106,6 +107,12 @@
   // ============================================================
   //  Sizing / responsiveness
   // ============================================================
+  // On touch devices the game is portrait-only (a consistent aspect ratio makes
+  // difficulty easier to balance); in landscape we freeze and show the #rotate
+  // overlay (CSS, same query). Desktop (fine pointer) is never affected.
+  const portraitLock = window.matchMedia("(orientation: landscape) and (pointer: coarse)");
+  const PORTRAIT_RATIO = 0.5;   // desktop renders the game in this W:H portrait frame (≈ a phone)
+
   // Full size on landscape; smoothly down to MOBILE_SCALE on a tall phone.
   function computeActorScale() {
     const aspect = W / H;
@@ -115,12 +122,23 @@
 
   function resize() {
     DPR = Math.min(window.devicePixelRatio || 1, 2);
-    W = window.innerWidth || document.documentElement.clientWidth || 800;
-    H = window.innerHeight || document.documentElement.clientHeight || 600;
+    const winW = window.innerWidth || document.documentElement.clientWidth || 800;
+    const winH = window.innerHeight || document.documentElement.clientHeight || 600;
+
+    // Touch devices fill the screen (already portrait; landscape is locked out).
+    // Desktop plays in a centered portrait frame so the playfield matches mobile.
+    if (window.matchMedia("(pointer: coarse)").matches) {
+      W = winW; H = winH;
+    } else if (winW / winH > PORTRAIT_RATIO) {
+      H = winH; W = Math.round(winH * PORTRAIT_RATIO);   // window wider than the frame
+    } else {
+      W = winW; H = Math.round(winW / PORTRAIT_RATIO);   // very narrow window
+    }
+
+    stage.style.width = W + "px";
+    stage.style.height = H + "px";
     canvas.width = Math.round(W * DPR);
     canvas.height = Math.round(H * DPR);
-    canvas.style.width = W + "px";
-    canvas.style.height = H + "px";
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
 
     actorScale = computeActorScale();
@@ -135,6 +153,7 @@
   window.addEventListener("resize", resize);
   window.addEventListener("orientationchange", resize);
   window.addEventListener("load", resize);
+  portraitLock.addEventListener("change", () => { resize(); last = 0; });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) last = 0; });
 
   // ============================================================
@@ -265,6 +284,7 @@
   //  Input — unified for keyboard, mouse, touch & pen
   // ============================================================
   function pressJump() {
+    if (portraitLock.matches) return;   // ignore input while asking to rotate
     resumeAudio();
 
     if (state === READY) { startGame(); /* fall through so the first press also hops */ }
@@ -379,6 +399,7 @@
   //  Update
   // ============================================================
   function update(dt) {
+    if (portraitLock.matches) return;                       // paused: rotate to portrait (touch + landscape)
     if (state === CUTSCENE) { updateCutscene(dt); return; } // world frozen during the crash
     const playing = state === PLAYING;
 
