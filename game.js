@@ -58,6 +58,7 @@
   const GRAVITY_HOLD     = 2.1;   // reduced gravity while rising and holding
   const JUMP_CUT         = 0.80;  // velocity ceiling applied on early release (short hops)
   const MAX_HOLD         = 0.26;  // max seconds the low-gravity assist lasts (caps height)
+  const COYOTE_TIME      = 0.10;  // grace after leaving an edge during which a jump still fires
 
   // World speed & difficulty
   const BASE_SPEED       = 0.62;  // starting scroll speed (H units / sec)
@@ -93,6 +94,7 @@
   let restartAllowedAt = 0;
 
   const courier = { y: 0, vy: 0, grounded: true, holding: false, jumpTime: 0 };
+  let coyote = 0;           // seconds of coyote-time left (jump grace just after an edge)
   let pedalPhase = 0;       // radians; drives leg pedaling + wheel spin
 
   let rails = [];
@@ -170,7 +172,8 @@
       if (AC) audioCtx = new AC();
     }
     if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
-    decodeExplosion();   // decode the explosion clip now that we have a context
+    decodeExplosion();   // decode the clips now that we have a context
+    decodeCrash();
   }
 
   function beep(freq, dur, type, vol, slideTo) {
@@ -191,7 +194,6 @@
 
   const playJump  = () => beep(300, 0.18, "square", 0.06, 660);
   const playPoint = () => beep(880, 0.08, "square", 0.05);
-  const playCrash = () => { beep(220, 0.35, "sawtooth", 0.09, 70); beep(110, 0.4, "square", 0.06, 50); };
 
   // ---------- Explosion sound (sounds/explosion.mp3) ----------
   const EXPLOSION_VOL = 1.0;        // raise for a louder blast
@@ -216,6 +218,33 @@
       src.buffer = explosionBuf;
       const g = audioCtx.createGain();
       g.gain.value = EXPLOSION_VOL;
+      src.connect(g).connect(audioCtx.destination);
+      src.start();
+    } catch (_) {}
+  }
+
+  // ---------- Crash sound (sounds/crash.mp3) ----------
+  const CRASH_VOL = 1.0;            // raise for a louder crash
+  let crashBuf = null;              // decoded AudioBuffer
+  let crashBytes = null;            // raw file bytes; decoded once the audio context exists
+
+  fetch("sounds/crash.mp3")
+    .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
+    .then((ab) => { crashBytes = ab; decodeCrash(); })
+    .catch(() => {});
+
+  function decodeCrash() {
+    if (!audioCtx || crashBuf || !crashBytes) return;
+    audioCtx.decodeAudioData(crashBytes.slice(0), (buf) => { crashBuf = buf; }, () => {});
+  }
+
+  function playCrash() {
+    if (muted || !audioCtx || !crashBuf) return;
+    try {
+      const src = audioCtx.createBufferSource();
+      src.buffer = crashBuf;
+      const g = audioCtx.createGain();
+      g.gain.value = CRASH_VOL;
       src.connect(g).connect(audioCtx.destination);
       src.start();
     } catch (_) {}
@@ -295,11 +324,12 @@
       return;
     }
 
-    if (state === PLAYING && courier.grounded) {
+    if (state === PLAYING && (courier.grounded || coyote > 0)) {
       courier.vy = -JUMP_V0 * H * actorScale;
       courier.grounded = false;
       courier.holding = true;
       courier.jumpTime = 0;
+      coyote = 0;                  // consume — no mid-air re-jump
       playJump();
     }
   }
@@ -352,6 +382,7 @@
     courier.vy = 0;
     courier.grounded = true;
     courier.holding = false;
+    coyote = 0;
     startScreen.classList.add("hidden");
     gameOverScreen.classList.add("hidden");
     updateHUD();
@@ -439,13 +470,17 @@
       courier.jumpTime += dt;
     }
 
-    // Floor under the courier: the road, or a railing top it's descending onto
-    // (one-way — only landable from at/above its surface).
+    // The courier's horizontal footprint — used for both support and collisions.
+    const half  = courierW * 0.5;
+    const footL = courierX - half, footR = courierX + half;
+
+    // Floor under the courier: the road, or a railing top the courier is at least
+    // HALF on (one-way — only landable from at/above its surface). Being half-on is
+    // also what keeps you "grounded", so you can still jump right at the edge.
     let surface = groundY;
     for (const r of rails) {
-      if (courierX > r.x && courierX < r.x + r.w && r.top < surface && prevFeet <= r.top + 1) {
-        surface = r.top;
-      }
+      const onTop = Math.min(footR, r.x + r.w) - Math.max(footL, r.x); // overlap width
+      if (onTop >= half && r.top < surface && prevFeet <= r.top + 1) surface = r.top;
     }
     if (courier.vy >= 0 && courier.y >= surface) {   // resting on / landing on the surface
       courier.y = surface;
@@ -456,14 +491,20 @@
       courier.grounded = false;                       // rising, or ran off the end of a railing
     }
 
-    // Crash: ram the front (left) face — the courier's nose is past a railing's left
-    // edge while its centre hasn't reached it yet and its wheels are below the top.
-    const footR = courierX + courierW * 0.30;
+    // Coyote time: keep "can jump" alive for a beat after rolling off an edge so a
+    // slightly-late edge jump still fires; refreshed every frame we're grounded.
+    coyote = courier.grounded ? COYOTE_TIME : Math.max(0, coyote - dt);
+
+    // Crash: hit a railing's FRONT (left) face with the wheels below its top. This
+    // covers both a head-on ram and dropping onto the face at an angle — any frame
+    // the front edge sits inside the footprint while the wheels are below counts.
+    // Rolling off the FAR end never triggers it (there the front edge is far to the
+    // left of the courier). The swept term guards a single huge dt step.
     const tol = RAIL_CRASH_TOL * H * actorScale;
     for (const r of rails) {
-      // the railing's front edge swept past the courier's nose this frame, with the
-      // wheels still below the top => rammed the side (robust to large dt / low FPS).
-      if (r.prevX >= footR && r.x < footR && courier.y > r.top + tol) { gameOver(); break; }
+      const frontInFoot = r.x >= footL && r.x <= footR;
+      const sweptOver    = r.prevX > footR && r.x < footL;
+      if (courier.y > r.top + tol && (frontInFoot || sweptOver)) { gameOver(); break; }
     }
 
     // Score
