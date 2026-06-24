@@ -11,6 +11,8 @@
   box-sizing: border-box;
 }
 
+.hidden { display: none !important; }
+
 html, body {
   width: 100%;
   height: 100%;
@@ -49,25 +51,33 @@ html, body {
 }
 
 /* ---------- HUD ---------- */
+/* Score + best stack at the top-right, clear of the top-left Back button. */
 #hud {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: flex-end;
   padding: clamp(10px, 2.5vmin, 26px);
   pointer-events: none;
   font-variant-numeric: tabular-nums;
   letter-spacing: 1px;
 }
 
+/* White with a dark outline so it stays legible over any game's background
+   (Bike Courier's light sky and Stack's dark gradient alike). */
 #score {
   font-size: clamp(22px, 5.5vmin, 52px);
   font-weight: 800;
-  color: var(--ink);
-  text-shadow: 0 2px 0 rgba(255, 255, 255, 0.5);
+  color: #fff;
+  text-shadow:
+    -1px -1px 0 rgba(0, 0, 0, 0.35),
+     1px -1px 0 rgba(0, 0, 0, 0.35),
+    -1px  1px 0 rgba(0, 0, 0, 0.35),
+     1px  1px 0 rgba(0, 0, 0, 0.35),
+     0 2px 6px rgba(0, 0, 0, 0.35);
 }
 
 #best {
@@ -80,7 +90,7 @@ html, body {
   margin-top: 0.3em;
 }
 
-/* ---------- Mute button ---------- */
+/* ---------- Round buttons (mute, back) ---------- */
 .btn {
   position: absolute;
   bottom: clamp(10px, 2.5vmin, 26px);
@@ -100,6 +110,16 @@ html, body {
   z-index: 5;
 }
 .btn:active { transform: scale(0.92); }
+
+/* Back-to-menu sits top-left (mute stays bottom-right). */
+#back {
+  top: clamp(10px, 2.5vmin, 26px);
+  left: clamp(10px, 2.5vmin, 26px);
+  bottom: auto;
+  right: auto;
+  font-size: clamp(20px, 4vmin, 30px);
+  font-weight: 800;
+}
 
 /* ---------- Overlays ---------- */
 .overlay {
@@ -138,7 +158,7 @@ html, body {
   line-height: 1.05;
   margin-bottom: 0.35em;
 }
-.card h1.crash { color: #d63b2f; }
+#overTitle { color: #d63b2f; }
 
 .card .lead {
   font-size: clamp(15px, 3.4vmin, 26px);
@@ -214,4 +234,82 @@ html, body {
 @keyframes rotateHint {
   0%, 45%   { transform: rotate(0deg); }
   70%, 100% { transform: rotate(-90deg); }
+}
+
+/* ---------- Launcher menu ---------- */
+#menu {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(4px, 1.2vmin, 12px);
+  padding: 6vmin;
+  background: radial-gradient(circle at 50% 22%, #2a2740, #14141a 70%);
+  color: #fff;
+  z-index: 1;
+}
+
+.menu-title {
+  font-size: clamp(28px, 8vmin, 56px);
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+.menu-sub {
+  font-size: clamp(13px, 3vmin, 20px);
+  opacity: 0.65;
+  margin-bottom: clamp(14px, 4vmin, 30px);
+}
+
+#gameGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(10px, 3vmin, 20px);
+  width: min(92vw, 520px);
+}
+
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35em;
+  aspect-ratio: 1 / 1;
+  border: none;
+  border-top: 4px solid var(--accent, var(--yellow));
+  border-radius: 18px;
+  padding: clamp(10px, 3vmin, 20px);
+  background: #20202a;
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.tile:active { transform: scale(0.96); }
+.tile:hover { box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); }
+
+.tile-emoji { font-size: clamp(34px, 10vmin, 64px); line-height: 1; }
+.tile-title { font-size: clamp(14px, 3.6vmin, 22px); font-weight: 700; }
+.tile-tag   { font-size: clamp(10px, 2.4vmin, 14px); opacity: 0.6; text-align: center; }
+
+.tile-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: clamp(8px, 2vmin, 11px);
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  background: var(--accent, var(--yellow));
+  color: #1a1a1a;
+  padding: 0.2em 0.5em;
+  border-radius: 999px;
+}
+
+.tile-soon {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+  border-top-color: #555;
 }
