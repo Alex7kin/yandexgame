@@ -8,7 +8,8 @@ on:
     paths:
       - "index.html"
       - "style.css"
-      - "game.js"
+      - "app.js"
+      - "games/**"
       - "images/**"
       - "sounds/**"
       - ".github/workflows/deploy.yml"
