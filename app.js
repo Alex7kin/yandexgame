@@ -136,13 +136,11 @@
     inited = true;
     updateMuteIcon();
     buildMenu();
-    // ?g=<id> deep-links straight into a game; otherwise a Telegram launch drops
-    // into the ranked game; otherwise show the menu.
-    const byId = (id) => games.find((g) => g.id === id);
-    const deep = byId(params.get("g"));
-    if (deep) { launch(deep); return; }
-    const ranked = byId(RANKED_GAME);
-    if (TG_TOKEN && ranked) launch(ranked);
+    // Always show the menu first — including when launched from Telegram. Scoring
+    // still works: the ranked game submits with the token/backend captured from the
+    // URL at load. (?g=<id> is an explicit deep-link straight into one game.)
+    const deep = games.find((g) => g.id === params.get("g"));
+    if (deep) launch(deep);
   }
   window.addEventListener("DOMContentLoaded", init);
 })();
