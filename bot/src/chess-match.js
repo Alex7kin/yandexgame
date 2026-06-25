@@ -1,17 +1,19 @@
 /* ============================================================
    ChessMatch — one Durable Object per chess match.
 
-   Authoritative: validates every move with chess.js, seats White/Black (by a
-   pre-assigned roster for /chess challenges, else first-come), broadcasts the
-   position to both players' WebSockets, handles resign / draw-offer / rematch,
-   and records finished games to D1 (chess_results) for the dashboard. Persists
-   to its SQLite storage so it survives hibernation.
+   Authoritative game + clock. Validates moves with chess.js, seats White/Black,
+   handles resign / draw / rematch, records finished games to D1, and runs a
+   per-side chess clock: the side to move has a running clock; on each move its
+   elapsed time is banked and the clock switches. A DO alarm fires at the running
+   side's deadline to enforce a flag (loss on time). Clients tick the display
+   smoothly between events; the DO only broadcasts on real events.
 
-   Colour is derived from the player's uid each time (not cached on the socket),
-   so a rematch can swap sides without stale socket state.
+   Persists to SQLite storage so it survives hibernation.
    ============================================================ */
 import { DurableObject } from "cloudflare:workers";
 import { Chess } from "chess.js";
+
+const DEFAULT_CLOCK_MS = 5 * 60 * 1000;   // 5 minutes per side (override with CHESS_CLOCK_MS for tests)
 
 export class ChessMatch extends DurableObject {
   constructor(ctx, env) {
@@ -21,13 +23,17 @@ export class ChessMatch extends DurableObject {
     });
   }
 
+  clockInitial() { return Math.max(1000, Number(this.env && this.env.CHESS_CLOCK_MS) || DEFAULT_CLOCK_MS); }
+
   load() {
     const rows = this.ctx.storage.sql.exec("SELECT v FROM kv WHERE k = 'state'").toArray();
     if (rows.length) return JSON.parse(rows[0].v);
+    const t = this.clockInitial();
     return {
       fen: new Chess().fen(), players: { white: null, black: null }, roster: null,
       lastMove: null, over: false, result: "", resultCode: null, reason: null,
       drawOffer: null, rematch: [], recorded: false,
+      clock: { white: t, black: t, running: null, turnStart: null },
     };
   }
   save(st) {
@@ -51,6 +57,11 @@ export class ChessMatch extends DurableObject {
 
     const st = this.load();
     const color = this.seat(st, uid, name);
+    // start White's clock once both players are present
+    if (st.clock && !st.over && !st.clock.running && st.players.white && st.players.black) {
+      await this.switchClock(st, "white");
+      this.save(st);
+    }
 
     const pair = new WebSocketPair();
     const client = pair[0], server = pair[1];
@@ -74,7 +85,6 @@ export class ChessMatch extends DurableObject {
     return "spectator";
   }
 
-  // RPC: the Worker pre-assigns colours when a /chess challenge is created.
   async assign(whiteUid, blackUid) {
     const st = this.load();
     st.roster = { white: whiteUid, black: blackUid };
@@ -102,25 +112,28 @@ export class ChessMatch extends DurableObject {
     if (color !== (game.turn() === "w" ? "white" : "black")) return this.broadcast(st);
     let mv = null;
     try { mv = game.move({ from: m.from, to: m.to, promotion: m.promotion || undefined }); } catch { mv = null; }
-    if (!mv) return this.broadcast(st);                 // illegal -> resync everyone (sender reverts)
+    if (!mv) return this.broadcast(st);
     st.fen = game.fen();
     st.lastMove = { from: mv.from, to: mv.to };
-    st.drawOffer = null;                                // a move declines a pending draw offer
+    st.drawOffer = null;
+    // bank the mover's elapsed time
+    if (st.clock && st.clock.running === color && st.clock.turnStart != null) {
+      st.clock[color] = Math.max(0, st.clock[color] - (Date.now() - st.clock.turnStart));
+    }
     if (game.isGameOver()) {
       const o = outcome(game);
-      this.finish(st, o.code, o.reason);
-      this.save(st); this.broadcast(st);
-      await this.record(st);
+      await this.endGame(st, o.code, o.reason);
+      this.save(st); this.broadcast(st); await this.record(st);
       return;
     }
+    await this.switchClock(st, color === "white" ? "black" : "white");
     this.save(st); this.broadcast(st);
   }
 
   async onResign(st, color) {
     if (st.over || (color !== "white" && color !== "black")) return;
-    this.finish(st, color === "white" ? "black" : "white", "resignation");
-    this.save(st); this.broadcast(st);
-    await this.record(st);
+    await this.endGame(st, color === "white" ? "black" : "white", "resignation");
+    this.save(st); this.broadcast(st); await this.record(st);
   }
 
   onDrawOffer(st, color) {
@@ -132,28 +145,61 @@ export class ChessMatch extends DurableObject {
   async onDrawResolve(st, color, accept) {
     if (st.over || !st.drawOffer || (color !== "white" && color !== "black") || color === st.drawOffer) return;
     if (accept) {
-      this.finish(st, "draw", "agreement");
-      this.save(st); this.broadcast(st);
-      await this.record(st);
+      await this.endGame(st, "draw", "agreement");
+      this.save(st); this.broadcast(st); await this.record(st);
     } else {
       st.drawOffer = null;
       this.save(st); this.broadcast(st);
     }
   }
 
-  onRematch(st, uid) {
+  async onRematch(st, uid) {
     if (!st.over || this.colorOf(st, uid) === "spectator") return;
     st.rematch = st.rematch || [];
     if (!st.rematch.includes(uid)) st.rematch.push(uid);
     const w = st.players.white, b = st.players.black;
-    if (w && b && st.rematch.includes(w.id) && st.rematch.includes(b.id)) {   // both agreed -> new game, swapped colours
+    if (w && b && st.rematch.includes(w.id) && st.rematch.includes(b.id)) {   // both agreed
+      const t = this.clockInitial();
       st.fen = new Chess().fen();
-      st.players = { white: b, black: w };
+      st.players = { white: b, black: w };                                     // swap colours
       if (st.roster) st.roster = { white: st.roster.black, black: st.roster.white };
       st.lastMove = null; st.over = false; st.result = ""; st.resultCode = null; st.reason = null;
       st.drawOffer = null; st.rematch = []; st.recorded = false;
+      st.clock = { white: t, black: t, running: null, turnStart: null };
+      await this.switchClock(st, "white");
     }
     this.save(st); this.broadcast(st);
+  }
+
+  // The running side's clock expired.
+  async alarm() {
+    const st = this.load();
+    if (st.over || !st.clock || !st.clock.running || st.clock.turnStart == null) return;
+    const running = st.clock.running;
+    const elapsed = Date.now() - st.clock.turnStart;
+    if (elapsed < st.clock[running]) {                          // woke early — reschedule to the real deadline
+      await this.ctx.storage.setAlarm(st.clock.turnStart + st.clock[running]);
+      return;
+    }
+    st.clock[running] = 0;
+    await this.endGame(st, running === "white" ? "black" : "white", "timeout");
+    this.save(st); this.broadcast(st); await this.record(st);
+  }
+
+  // ---- clock helpers ----
+  async switchClock(st, side) {
+    if (!st.clock) return;
+    st.clock.running = side;
+    st.clock.turnStart = Date.now();
+    await this.ctx.storage.setAlarm(Date.now() + Math.max(0, st.clock[side]));
+  }
+  async stopClock(st) {
+    if (st.clock) { st.clock.running = null; st.clock.turnStart = null; }
+    await this.ctx.storage.deleteAlarm();
+  }
+  async endGame(st, code, reason) {
+    this.finish(st, code, reason);
+    await this.stopClock(st);
   }
 
   finish(st, code, reason) {
@@ -165,7 +211,6 @@ export class ChessMatch extends DurableObject {
     st.drawOffer = null; st.rematch = [];
   }
 
-  // Log a finished game to D1 — only real Telegram match-ups (uids start with "u").
   async record(st) {
     if (st.recorded) return;
     const w = st.players.white, b = st.players.black;
@@ -187,6 +232,7 @@ export class ChessMatch extends DurableObject {
         black: st.players.black ? st.players.black.name : null,
       },
       draw: st.drawOffer || null,
+      clock: clockSnapshot(st),
       youAre: youAre || "spectator",
     };
   }
@@ -208,4 +254,16 @@ function outcome(game) {
   if (game.isThreefoldRepetition()) return { code: "draw", reason: "repetition" };
   if (game.isInsufficientMaterial()) return { code: "draw", reason: "insufficient material" };
   return { code: "draw", reason: "draw" };
+}
+
+// Remaining ms per side as of "now" — the running side's value is decremented so
+// the client can keep ticking locally from receipt without further broadcasts.
+function clockSnapshot(st) {
+  const c = st.clock;
+  if (!c) return null;
+  const out = { white: c.white, black: c.black, running: c.running };
+  if (c.running && c.turnStart != null) {
+    out[c.running] = Math.max(0, c[c.running] - (Date.now() - c.turnStart));
+  }
+  return out;
 }
