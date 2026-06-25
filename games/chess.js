@@ -12,11 +12,23 @@
 (function () {
   "use strict";
 
-  const LIGHT = "#eadbc0", DARK = "#b58863", BG = "#262421";
-  const SEL_TINT = "rgba(255,235,90,0.45)", MOVE_TINT = "rgba(155,199,0,0.41)";
-  const CHK_TINT = "rgba(230,60,50,0.55)", DOT = "rgba(20,20,20,0.22)";
-  const GLYPH = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
+  const LIGHT = "#eeeed2", DARK = "#769656", BG = "#302e2c";          // chess.com green board
+  const SEL_TINT = "rgba(247,247,105,0.55)", MOVE_TINT = "rgba(247,247,105,0.55)";
+  const CHK_TINT = "rgba(230,60,50,0.55)", DOT = "rgba(0,0,0,0.16)";
+  const GLYPH = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };  // fallback if SVGs fail
   const PROMO = ["q", "r", "b", "n"];
+
+  // Vendored open Staunton piece set (cburnett, from lichess) — loaded as images.
+  const PIECE_IMG = {};
+  (function () {
+    for (const k of ["wK","wQ","wR","wB","wN","wP","bK","bQ","bR","bB","bN","bP"]) {
+      const img = new Image();
+      img.onload = () => { img._ok = true; };
+      img.src = "games/vendor/pieces/" + k + ".svg";
+      PIECE_IMG[k] = img;
+    }
+  })();
+  const pieceKey = (p) => (p.color === "w" ? "w" : "b") + p.type.toUpperCase();
   const READY = 0, PLAYING = 1, GAMEOVER = 2;
 
   const portraitLock = window.matchMedia("(orientation: landscape) and (pointer: coarse)");
@@ -278,26 +290,24 @@
 
       for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
         const { sr, sc } = b2s(r, c);
-        const x = boardX + sc * sq, y = boardY + sr * sq, s = bsq(r, c);
-        ctx.fillStyle = (r + c) % 2 === 0 ? LIGHT : DARK;
+        const x = boardX + sc * sq, y = boardY + sr * sq, s = bsq(r, c), isLight = (r + c) % 2 === 0;
+        ctx.fillStyle = isLight ? LIGHT : DARK;
         ctx.fillRect(x, y, sq, sq);
         if (lastMove && (s === lastMove.from || s === lastMove.to)) { ctx.fillStyle = MOVE_TINT; ctx.fillRect(x, y, sq, sq); }
         if (s === selected) { ctx.fillStyle = SEL_TINT; ctx.fillRect(x, y, sq, sq); }
         if (inCheck && board[r][c] && board[r][c].type === "k" && board[r][c].color === turn) { ctx.fillStyle = CHK_TINT; ctx.fillRect(x, y, sq, sq); }
+        // coordinates: rank number on the left edge, file letter on the bottom edge
+        ctx.fillStyle = isLight ? DARK : LIGHT;
+        ctx.font = `700 ${Math.round(sq * 0.22)}px system-ui,sans-serif`;
+        if (sc === 0) { ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.fillText(String(8 - r), x + sq * 0.07, y + sq * 0.06); }
+        if (sr === 7) { ctx.textAlign = "right"; ctx.textBaseline = "bottom"; ctx.fillText(String.fromCharCode(97 + c), x + sq * 0.94, y + sq * 0.95); }
       }
 
       // pieces
-      ctx.font = `${Math.round(sq * 0.78)}px ${PIECE_FONT}`;
-      ctx.lineJoin = "round";
       for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
         const p = board[r][c]; if (!p) continue;
         const { sr, sc } = b2s(r, c);
-        const cx = boardX + (sc + 0.5) * sq, cy = boardY + (sr + 0.52) * sq;
-        ctx.lineWidth = sq * 0.04;
-        if (p.color === "w") { ctx.fillStyle = "#fafafa"; ctx.strokeStyle = "rgba(0,0,0,0.7)"; }
-        else { ctx.fillStyle = "#2a2a2a"; ctx.strokeStyle = "rgba(255,255,255,0.5)"; }
-        ctx.strokeText(GLYPH[p.type], cx, cy);
-        ctx.fillText(GLYPH[p.type], cx, cy);
+        drawPiece(p, boardX + sc * sq, boardY + sr * sq);
       }
 
       // legal-move hints
@@ -329,21 +339,27 @@
       return (turn === "w" ? "White" : "Black") + " to move" + (inCheck ? " — Check!" : "");
     }
 
+    function drawPiece(p, x, y) {
+      const img = PIECE_IMG[pieceKey(p)];
+      if (img && img._ok) { ctx.drawImage(img, x, y, sq, sq); return; }
+      ctx.font = `${Math.round(sq * 0.78)}px ${PIECE_FONT}`;          // fallback glyph
+      ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineJoin = "round"; ctx.lineWidth = sq * 0.04;
+      if (p.color === "w") { ctx.fillStyle = "#fafafa"; ctx.strokeStyle = "rgba(0,0,0,0.7)"; }
+      else { ctx.fillStyle = "#2a2a2a"; ctx.strokeStyle = "rgba(255,255,255,0.5)"; }
+      ctx.strokeText(GLYPH[p.type], x + sq / 2, y + sq * 0.52);
+      ctx.fillText(GLYPH[p.type], x + sq / 2, y + sq * 0.52);
+    }
+
     function drawPromo() {
       const { r, c } = sqRC(pendingPromo.to), { sr, sc } = b2s(r, c);
       const color = game.turn();
       const dir = sr < 4 ? 1 : -1;               // grow toward the board centre (works flipped too)
       promoCells = [];
-      ctx.font = `${Math.round(sq * 0.78)}px ${PIECE_FONT}`;
       for (let i = 0; i < 4; i++) {
         const x = boardX + sc * sq, y = boardY + (sr + dir * i) * sq;
-        ctx.fillStyle = "#33333a"; ctx.fillRect(x, y, sq, sq);
-        ctx.strokeStyle = "#edc22e"; ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, sq - 2, sq - 2);
-        ctx.lineWidth = sq * 0.04;
-        if (color === "w") { ctx.fillStyle = "#fafafa"; ctx.strokeStyle = "rgba(0,0,0,0.7)"; }
-        else { ctx.fillStyle = "#2a2a2a"; ctx.strokeStyle = "rgba(255,255,255,0.6)"; }
-        ctx.strokeText(GLYPH[PROMO[i]], x + sq / 2, y + sq * 0.52);
-        ctx.fillText(GLYPH[PROMO[i]], x + sq / 2, y + sq * 0.52);
+        ctx.fillStyle = "#2b2b2b"; ctx.fillRect(x, y, sq, sq);
+        ctx.strokeStyle = "#f0c040"; ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, sq - 2, sq - 2);
+        drawPiece({ type: PROMO[i], color }, x, y);
         promoCells.push({ x, y, piece: PROMO[i] });
       }
     }

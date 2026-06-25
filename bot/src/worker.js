@@ -96,6 +96,11 @@ async function onMessage(msg, env) {
     return onReset(msg, env);
   }
 
+  // Challenge the replied-to person to a game of chess.
+  if (/^\/chess(@\w+)?(\s|$)/.test(text)) {
+    return onChess(msg, env);
+  }
+
   // Only /play or /start (optionally addressed as /play@botname) launches the game.
   if (/^\/(start|play)(@\w+)?(\s|$)/.test(text)) {
     return tg(env, "sendGame", { chat_id: msg.chat.id, game_short_name: env.GAME_SHORT_NAME });
@@ -160,6 +165,39 @@ async function onReset(msg, env) {
   });
 }
 
+// /chess (reply to a person): post a chess game message, pre-assign colours on the
+// match's Durable Object (challenger White, replied-to Black), and announce it.
+async function onChess(msg, env) {
+  const reply = msg.reply_to_message;
+  if (!reply || !reply.from) {
+    return tg(env, "sendMessage", {
+      chat_id: msg.chat.id, reply_to_message_id: msg.message_id,
+      text: "♟ Reply to the person you want to challenge with /chess.",
+    });
+  }
+  const challenger = msg.from, opponent = reply.from;
+  if (opponent.is_bot || opponent.id === challenger.id) {
+    return tg(env, "sendMessage", {
+      chat_id: msg.chat.id, reply_to_message_id: msg.message_id,
+      text: "Reply to another person (not a bot or yourself).",
+    });
+  }
+  const sent = await tg(env, "sendGame", { chat_id: msg.chat.id, game_short_name: env.CHESS_SHORT_NAME });
+  if (!sent.ok || !sent.result) return;
+  const matchId = matchIdFor(sent.result.chat.id, sent.result.message_id);
+  try { await env.CHESS.get(env.CHESS.idFromName(matchId)).assign("u" + challenger.id, "u" + opponent.id); } catch (_) {}
+  const wName = challenger.first_name || "White", bName = opponent.first_name || "Black";
+  return tg(env, "sendMessage", {
+    chat_id: msg.chat.id, reply_to_message_id: sent.result.message_id,
+    text: `♟ ${wName} (White) vs ${bName} (Black) — both tap ▶️ Play above to start.`,
+  });
+}
+
+// A match id derived from the chess game message (same on /chess and on Play tap).
+function matchIdFor(chatId, msgId) {
+  return ("c" + chatId + "m" + msgId).replace(/[^A-Za-z0-9_-]/g, "");
+}
+
 // Play button tapped -> answer with the game URL (carrying a signed identity token
 // and the backend's own URL so the game knows where to POST its score).
 async function onCallback(cq, env, selfOrigin) {
@@ -172,9 +210,15 @@ async function onCallback(cq, env, selfOrigin) {
   if (cq.message) { payload.c = cq.message.chat.id; payload.m = cq.message.message_id; }
   else if (cq.inline_message_id) { payload.i = cq.inline_message_id; }
 
+  // A chess game message deep-links straight into the online board for its match.
+  let extra = "";
+  if (cq.game_short_name === env.CHESS_SHORT_NAME && cq.message) {
+    extra = "&g=chess&m=" + encodeURIComponent(matchIdFor(cq.message.chat.id, cq.message.message_id));
+  }
+
   const token = await signToken(env, payload);
   const sep = env.GAME_URL.includes("?") ? "&" : "?";
-  const gameUrl = `${env.GAME_URL}${sep}t=${encodeURIComponent(token)}&b=${encodeURIComponent(selfOrigin)}`;
+  const gameUrl = `${env.GAME_URL}${sep}t=${encodeURIComponent(token)}&b=${encodeURIComponent(selfOrigin)}${extra}`;
   return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, url: gameUrl });
 }
 

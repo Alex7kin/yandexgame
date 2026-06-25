@@ -20,6 +20,8 @@ Owner   ─▶  <worker>/scores?key=<WEBHOOK_SECRET>   (dashboard of all bests)
    - **title** (e.g. `Bike Courier`), **description**, and a **photo** (the preview image).
    - **short name**: `bikecourier`  ← must match `GAME_SHORT_NAME` in `wrangler.toml`.
 2. (Inline sharing is already enabled on your bot. If not: **/setinline** → a placeholder.)
+3. Run **/newgame** again for chess: title `Chess`, a board photo, **short name** `chess`
+   ← must match `CHESS_SHORT_NAME` in `wrangler.toml`.
 
 You do **not** set the game URL in BotFather — the Worker supplies it at Play time.
 
@@ -87,6 +89,17 @@ appears on the message's leaderboard. Type `@yandexGame0_0bot` in any chat to sh
 Also: **`RANKED_GAME`** — id of the game that updates Telegram's native board
 (**must match `RANKED_GAME` in `app.js`**); and **`OWNER_ID`** — your Telegram user
 id, the only one allowed to run `/reset`.
+
+## Chess — challenge a friend
+
+**Reply** to someone in the chat with `/chess`. The bot posts a chess game (you're
+White, they're Black) and pre-assigns the colours on that match's **Durable Object**.
+Both tap ▶️ **Play** to open the board; moves sync live over a WebSocket to the DO,
+which is the referee (validates with chess.js, broadcasts each position). The DO is
+SQLite-backed, so it runs on the Workers **free** plan and survives hibernation.
+
+Deploying the Worker (`npx wrangler deploy`) applies the `v1` migration that creates
+the `ChessMatch` Durable Object.
 
 ## Note on score trust
 

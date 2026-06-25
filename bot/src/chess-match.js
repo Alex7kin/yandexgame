@@ -51,14 +51,27 @@ export class ChessMatch extends DurableObject {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  // First unseated visitor = White, second = Black, rest = spectators.
-  // A returning uid keeps its colour (reconnection).
+  // A returning uid keeps its colour (reconnection). If a roster was pre-assigned
+  // (a /chess challenge), seat strictly by it; otherwise first-come White/Black.
   seat(st, uid, name) {
     if (st.players.white && st.players.white.id === uid) return "white";
     if (st.players.black && st.players.black.id === uid) return "black";
+    if (st.roster) {
+      if (st.roster.white === uid) { st.players.white = { id: uid, name }; this.save(st); return "white"; }
+      if (st.roster.black === uid) { st.players.black = { id: uid, name }; this.save(st); return "black"; }
+      return "spectator";
+    }
     if (!st.players.white) { st.players.white = { id: uid, name }; this.save(st); return "white"; }
     if (!st.players.black) { st.players.black = { id: uid, name }; this.save(st); return "black"; }
     return "spectator";
+  }
+
+  // RPC: the Worker pre-assigns the two players' colours when a challenge is created.
+  async assign(whiteUid, blackUid) {
+    const st = this.load();
+    st.roster = { white: whiteUid, black: blackUid };
+    this.save(st);
+    return true;
   }
 
   webSocketMessage(ws, raw) {
