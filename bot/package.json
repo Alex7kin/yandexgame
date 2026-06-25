@@ -9,5 +9,8 @@
   },
   "devDependencies": {
     "wrangler": "^4.103.0"
+  },
+  "dependencies": {
+    "chess.js": "^1.4.0"
   }
 }

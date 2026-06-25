@@ -66,5 +66,11 @@
   <script src="games/bikecourier.js"></script>
   <script src="games/stack.js"></script>
   <script src="games/2048.js"></script>
+  <script src="games/chess.js"></script>
+  <!-- chess.js (rules engine) as a module, exposed as window.Chess for the classic game scripts -->
+  <script type="module">
+    import { Chess } from "./games/vendor/chess.js";
+    window.Chess = Chess;
+  </script>
 </body>
 </html>

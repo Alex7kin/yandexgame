@@ -15,8 +15,11 @@
    Worker secrets (`wrangler secret put ...`).
    ============================================================ */
 
+import { ChessMatch } from "./chess-match.js";
+export { ChessMatch };   // the Durable Object class must be exported from the entry module
+
 // Pretty names for the dashboard; falls back to the raw id.
-const GAME_TITLES = { bikecourier: "Bike Courier", stack: "Stack", "2048": "2048" };
+const GAME_TITLES = { bikecourier: "Bike Courier", stack: "Stack", "2048": "2048", chess: "Chess" };
 
 export default {
   async fetch(request, env) {
@@ -31,6 +34,11 @@ export default {
     // --- Score submission from the game (browser) ---
     if (path === "/score" && request.method === "POST") {
       return handleScore(request, env);
+    }
+
+    // --- Chess: WebSocket into a match's Durable Object ---
+    if (path === "/chess/ws") {
+      return handleChessWs(request, env, url);
     }
 
     // --- Telegram webhook ---
@@ -219,6 +227,35 @@ async function handleScore(request, env) {
     }
   }
   return cors(env, json({ ok: true, score }));
+}
+
+// Chess: verify identity, then proxy the WebSocket upgrade to the match's DO.
+async function handleChessWs(request, env, url) {
+  if (request.headers.get("Upgrade") !== "websocket") {
+    return new Response("expected websocket", { status: 426 });
+  }
+  const matchId = (url.searchParams.get("m") || "").trim();
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(matchId)) return new Response("bad match id", { status: 400 });
+
+  // Identity: a signed token (real Telegram user) if present, else a guest id the
+  // client keeps per tab — enough to seat two distinct players for testing.
+  let uid = null, name = "Player";
+  const token = url.searchParams.get("t");
+  if (token) {
+    const p = await verifyToken(env, token);
+    if (p && p.u) { uid = "u" + p.u; name = p.n || "Player"; }
+  }
+  if (!uid) {
+    const g = (url.searchParams.get("guest") || "").slice(0, 40);
+    uid = "g" + (g || crypto.randomUUID());
+    name = "Guest";
+  }
+
+  const stub = env.CHESS.get(env.CHESS.idFromName(matchId));
+  const doUrl = new URL("https://chess-do/ws");
+  doUrl.searchParams.set("uid", uid);
+  doUrl.searchParams.set("name", name);
+  return stub.fetch(new Request(doUrl, request));   // carries the Upgrade header
 }
 
 // Upsert the best score for a (game, player) into D1. No-op until D1 is bound,

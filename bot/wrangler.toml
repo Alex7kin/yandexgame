@@ -19,3 +19,13 @@ RANKED_GAME     = "stack"                                        # must match RA
 binding       = "DB"
 database_name = "gamezone"
 database_id   = "670c2da4-87dd-4418-9c93-e731bca221e7"
+
+# One Durable Object per chess match (authoritative game + WebSockets).
+[[durable_objects.bindings]]
+name       = "CHESS"
+class_name = "ChessMatch"
+
+# SQLite-backed DO so it runs on the Workers free plan.
+[[migrations]]
+tag                = "v1"
+new_sqlite_classes = ["ChessMatch"]
