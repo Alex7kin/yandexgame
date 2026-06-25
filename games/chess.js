@@ -53,6 +53,7 @@
     let online = false, ws = null, conn = "idle", myColor = null, players = { white: null, black: null };
     let matchId = null, backend = null, token = null, curFen = null, retryTimer = 0;
     let serverDraw = null, rematchSent = false, confirmResign = false, uiButtons = [];
+    let clock = null, clockRecv = 0;
 
     let audioCtx = null, raf = null;
     const listeners = [];
@@ -156,6 +157,7 @@
         if (had !== null) feedback(null);           // a real move arrived (not the first snapshot)
       }
       serverDraw = m.draw || null;
+      clock = m.clock || null; clockRecv = performance.now();
       confirmResign = false;
       if (!m.over) rematchSent = false;
       resultText = m.result || "";
@@ -340,6 +342,7 @@
 
       if (pendingPromo) drawPromo();
       if (state === GAMEOVER) drawResult();
+      drawClocks();
       drawControls();
     }
 
@@ -414,7 +417,7 @@
       if (!defs.length) return;
       const gap = sq * 0.18, bh = Math.min(sq * 0.8, H * 0.052);
       const bw = (boardSize - gap * (defs.length - 1)) / defs.length;
-      const y = boardY + boardSize + sq * 0.4;
+      const y = boardY + boardSize + (online && clock ? sq * 1.18 : sq * 0.4);
       defs.forEach((d, i) => {
         const x = boardX + i * (bw + gap);
         drawButton(x, y, bw, bh, d);
@@ -433,6 +436,47 @@
       ctx.font = `700 ${Math.round(h * 0.42)}px system-ui,"Segoe UI",sans-serif`;
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText(d.t, x + w / 2, y + h / 2);
+    }
+
+    // Two clocks below the board (your side on the right). The running clock ticks
+    // smoothly from the last server snapshot.
+    function clockMs(side) {
+      if (!clock) return 0;
+      if (clock.running === side) return Math.max(0, clock[side] - (performance.now() - clockRecv));
+      return clock[side];
+    }
+    function fmtClock(ms) {
+      if (ms <= 0) return "0:00";
+      const s = ms / 1000;
+      if (s < 20) return s.toFixed(1);
+      return Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
+    }
+    function drawClocks() {
+      if (!online || !clock) return;
+      const bottom = myColor === "black" ? "black" : "white";
+      const top = bottom === "white" ? "black" : "white";
+      const gap = sq * 0.18, pw = (boardSize - gap) / 2, ph = sq * 0.74, y = boardY + boardSize + sq * 0.22;
+      drawClockPill(boardX, y, pw, ph, top);
+      drawClockPill(boardX + pw + gap, y, pw, ph, bottom);
+    }
+    function drawClockPill(x, y, w, h, side) {
+      const ms = clockMs(side);
+      const running = clock.running === side && !!players.white && !!players.black;
+      const low = ms < 20000, r = h * 0.22;
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+      ctx.fillStyle = running ? "#f4f4f0" : "#3a3a39"; ctx.fill();
+      if (running) { ctx.strokeStyle = low ? "#c0382b" : "#5b8a3a"; ctx.lineWidth = 2; ctx.stroke(); }
+      const nm = players[side] || (side === "white" ? "White" : "Black");
+      ctx.fillStyle = running ? "#666" : "#9a9a9a";
+      ctx.font = `600 ${Math.round(h * 0.3)}px system-ui,"Segoe UI",sans-serif`;
+      ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      ctx.fillText(nm.length > 9 ? nm.slice(0, 9) : nm, x + w * 0.08, y + h / 2);
+      ctx.fillStyle = low ? "#c0382b" : running ? "#1a1a1a" : "#cfcfcf";
+      ctx.font = `800 ${Math.round(h * 0.44)}px ui-monospace,"Consolas",monospace`;
+      ctx.textAlign = "right"; ctx.textBaseline = "middle";
+      ctx.fillText(fmtClock(ms), x + w * 0.92, y + h / 2);
     }
 
     function endText(g) {
@@ -466,6 +510,7 @@
       selected = null; legal = []; targets = []; lastMove = null; pendingPromo = null; promoCells = [];
       flipped = false; resultText = ""; curFen = null;
       serverDraw = null; rematchSent = false; confirmResign = false; uiButtons = [];
+      clock = null; clockRecv = 0;
       host.onMuteToggle = null;
 
       gameOverScreen.classList.add("hidden");
