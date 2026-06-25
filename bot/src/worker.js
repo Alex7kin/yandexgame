@@ -349,7 +349,9 @@ async function scoresPage(env) {
     });
     sections += `<h2>${esc(title)}${ranked}</h2><table><tr><th>#</th><th>Player</th><th>Best</th><th>Updated</th></tr>${trs}</table>`;
   }
-  if (!sections) sections = "<p>No scores yet — play a game from Telegram.</p>";
+  const chessHtml = await chessSection(env, esc);
+  if (!sections && !chessHtml) sections = "<p>No scores yet — play a game from Telegram.</p>";
+  sections += chessHtml;
 
   const html =
     `<!doctype html><html><head><meta charset="utf-8">` +
@@ -363,6 +365,38 @@ async function scoresPage(env) {
     `td:nth-child(3){font-weight:700;color:#ffd34d}td:nth-child(1){color:#888;width:1%}</style></head><body>` +
     `<h1>🏆 Game Zone — best scores</h1><p class="sub">Best per player, per game.</p>${sections}</body></html>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+}
+
+// Win/loss/draw per player from finished chess games.
+async function chessSection(env, esc) {
+  if (!env.DB) return "";
+  let rows = [];
+  try {
+    const res = await env.DB.prepare(
+      `SELECT id, name,
+         SUM(CASE WHEN res='win'  THEN 1 ELSE 0 END) AS wins,
+         SUM(CASE WHEN res='loss' THEN 1 ELSE 0 END) AS losses,
+         SUM(CASE WHEN res='draw' THEN 1 ELSE 0 END) AS draws
+       FROM (
+         SELECT white_id AS id, white_name AS name,
+                CASE result WHEN 'white' THEN 'win' WHEN 'black' THEN 'loss' ELSE 'draw' END AS res
+           FROM chess_results
+         UNION ALL
+         SELECT black_id, black_name,
+                CASE result WHEN 'black' THEN 'win' WHEN 'white' THEN 'loss' ELSE 'draw' END
+           FROM chess_results
+       )
+       GROUP BY id ORDER BY wins DESC, draws DESC, losses ASC`
+    ).all();
+    rows = res.results || [];
+  } catch (_) { return ""; }     // table not created yet
+  if (!rows.length) return "";
+  let trs = "";
+  rows.forEach((r, i) => {
+    trs += `<tr><td>${i + 1}</td><td>${esc(r.name || r.id)}</td><td>${r.wins}</td><td>${r.losses}</td><td>${r.draws}</td></tr>`;
+  });
+  return `<h2>Chess <span class="rk" style="background:#769656;color:#fff">W-L-D</span></h2>` +
+    `<table><tr><th>#</th><th>Player</th><th>W</th><th>L</th><th>D</th></tr>${trs}</table>`;
 }
 
 // ============================================================
