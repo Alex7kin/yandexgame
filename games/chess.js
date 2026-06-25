@@ -52,6 +52,7 @@
     // online
     let online = false, ws = null, conn = "idle", myColor = null, players = { white: null, black: null };
     let matchId = null, backend = null, token = null, curFen = null, retryTimer = 0;
+    let serverDraw = null, rematchSent = false, confirmResign = false, uiButtons = [];
 
     let audioCtx = null, raf = null;
     const listeners = [];
@@ -154,12 +155,23 @@
         clearSelection(); pendingPromo = null;
         if (had !== null) feedback(null);           // a real move arrived (not the first snapshot)
       }
+      serverDraw = m.draw || null;
+      confirmResign = false;
+      if (!m.over) rematchSent = false;
       resultText = m.result || "";
       state = m.over ? GAMEOVER : PLAYING;
       updateHUD();
     }
-    function sendMove(from, to, promotion) {
-      if (ws && conn === "open") ws.send(JSON.stringify({ type: "move", from, to, promotion: promotion || null }));
+    function wsSend(obj) { if (ws && conn === "open") ws.send(JSON.stringify(obj)); }
+    function sendMove(from, to, promotion) { wsSend({ type: "move", from, to, promotion: promotion || null }); }
+    function doButton(a) {
+      if (a === "resign_ask") confirmResign = true;
+      else if (a === "resign_cancel") confirmResign = false;
+      else if (a === "resign") { confirmResign = false; wsSend({ type: "resign" }); }
+      else if (a === "draw_offer") wsSend({ type: "draw_offer" });
+      else if (a === "draw_accept") wsSend({ type: "draw_accept" });
+      else if (a === "draw_decline") wsSend({ type: "draw_decline" });
+      else if (a === "rematch") { rematchSent = true; wsSend({ type: "rematch" }); }
     }
 
     // ============================================================
@@ -228,14 +240,17 @@
       if (portraitLock.matches) return;
       resumeAudio();
 
-      if (!online) {
-        if (state === READY || state === GAMEOVER) { newGame(); return; }
-      } else if (state === GAMEOVER || conn !== "open") {
-        return;   // online: no tap-to-restart (rematch comes later); ignore while connecting
-      }
-
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left, y = e.clientY - rect.top;
+
+      if (online) {
+        for (const b of uiButtons) {
+          if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { doButton(b.a); return; }
+        }
+        if (conn !== "open") return;
+      } else if (state === READY || state === GAMEOVER) {
+        newGame(); return;
+      }
 
       if (pendingPromo) {
         for (const c of promoCells) {
@@ -325,6 +340,7 @@
 
       if (pendingPromo) drawPromo();
       if (state === GAMEOVER) drawResult();
+      drawControls();
     }
 
     function statusText(turn, inCheck) {
@@ -372,7 +388,51 @@
       ctx.fillText(resultText, W / 2, boardY + boardSize / 2 - sq * 0.25);
       ctx.font = `600 ${Math.round(sq * 0.26)}px system-ui,"Segoe UI",sans-serif`;
       ctx.fillStyle = "#ddd";
-      ctx.fillText(online ? "Back to leave" : "Tap to play again", W / 2, boardY + boardSize / 2 + sq * 0.45);
+      ctx.fillText(online ? "Rematch below ↓" : "Tap to play again", W / 2, boardY + boardSize / 2 + sq * 0.45);
+    }
+
+    // Online control strip below the board: resign / draw / rematch.
+    function drawControls() {
+      uiButtons = [];
+      if (!online || (myColor !== "white" && myColor !== "black")) return;
+      const defs = [];
+      if (state === GAMEOVER) {
+        defs.push(rematchSent ? { t: "Waiting for rematch…", a: null } : { t: "Rematch ↻", a: "rematch", ok: true });
+      } else if (state === PLAYING && players.white && players.black) {
+        const opp = myColor === "white" ? "black" : "white";
+        if (serverDraw === opp) {
+          defs.push({ t: "Accept draw ½", a: "draw_accept", ok: true });
+          defs.push({ t: "Decline", a: "draw_decline" });
+        } else if (confirmResign) {
+          defs.push({ t: "Confirm resign?", a: "resign", danger: true });
+          defs.push({ t: "Cancel", a: "resign_cancel" });
+        } else {
+          defs.push({ t: "Resign", a: "resign_ask" });
+          defs.push(serverDraw === myColor ? { t: "Draw offered", a: null } : { t: "Offer draw ½", a: "draw_offer" });
+        }
+      }
+      if (!defs.length) return;
+      const gap = sq * 0.18, bh = Math.min(sq * 0.8, H * 0.052);
+      const bw = (boardSize - gap * (defs.length - 1)) / defs.length;
+      const y = boardY + boardSize + sq * 0.4;
+      defs.forEach((d, i) => {
+        const x = boardX + i * (bw + gap);
+        drawButton(x, y, bw, bh, d);
+        if (d.a) uiButtons.push({ x, y, w: bw, h: bh, a: d.a });
+      });
+    }
+
+    function drawButton(x, y, w, h, d) {
+      const r = h * 0.24;
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+      ctx.fillStyle = d.danger ? "#b33b32" : d.ok ? "#5b8a3a" : d.a ? "#4a4947" : "#3a3a39";
+      ctx.fill();
+      ctx.fillStyle = d.a ? "#fff" : "#aaa";
+      ctx.font = `700 ${Math.round(h * 0.42)}px system-ui,"Segoe UI",sans-serif`;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(d.t, x + w / 2, y + h / 2);
     }
 
     function endText(g) {
@@ -405,6 +465,7 @@
 
       selected = null; legal = []; targets = []; lastMove = null; pendingPromo = null; promoCells = [];
       flipped = false; resultText = ""; curFen = null;
+      serverDraw = null; rematchSent = false; confirmResign = false; uiButtons = [];
       host.onMuteToggle = null;
 
       gameOverScreen.classList.add("hidden");
