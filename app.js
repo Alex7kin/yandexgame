@@ -26,13 +26,16 @@
   const params     = new URLSearchParams(location.search);
   const TG_TOKEN   = params.get("t");
   const TG_BACKEND = (params.get("b") || "").replace(/\/+$/, "");
-  function postScore(s) {
+  // Report a finished game's score to the Worker, tagged with which game it was.
+  // The Worker records every game's best per player centrally, and additionally
+  // updates Telegram's native board for the ranked game.
+  function postScore(gameId, s) {
     if (!TG_TOKEN || !TG_BACKEND || !(s > 0)) return;
     try {
       fetch(TG_BACKEND + "/score", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ t: TG_TOKEN, score: s }),
+        body: JSON.stringify({ t: TG_TOKEN, g: gameId, score: s }),
         keepalive: true, // let it complete even if the webview is closing
       }).catch(() => {});
     } catch (_) { /* never let scoring break a game */ }
@@ -60,7 +63,7 @@
       get muted() { return muted; },
       getBest() { return parseInt(localStorage.getItem(bestKey) || "0", 10) || 0; },
       setBest(v) { localStorage.setItem(bestKey, String(v | 0)); },
-      submitScore(s) { if (ranked) postScore(s); },   // unranked games never touch the board
+      submitScore(s) { postScore(game.id, s); },   // every game records centrally; Worker gates Telegram's board
       exitToMenu,
       onMuteToggle: null,   // a game may set this to react (e.g. silence a sound) on toggle
     };

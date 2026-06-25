@@ -10,3 +10,12 @@ GAME_URL        = "https://alex7kin.github.io/yandexgame/"
 ALLOWED_ORIGIN  = "https://alex7kin.github.io"         # the game's origin (for CORS on /score)
 BOT_USERNAME    = "yandexGame0_0bot"
 OWNER_ID        = "1247580692"                                   # your Telegram user id — only this user may run /reset (DM the bot to learn yours)
+RANKED_GAME     = "stack"                                        # must match RANKED_GAME in app.js — only this game updates Telegram's native board
+
+# Central scores live in D1 (SQLite). Create it once, then paste the id below:
+#   npx wrangler d1 create gamezone
+#   npx wrangler d1 execute gamezone --remote --file=schema.sql
+[[d1_databases]]
+binding       = "DB"
+database_name = "gamezone"
+database_id   = "670c2da4-87dd-4418-9c93-e731bca221e7"

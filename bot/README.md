@@ -1,14 +1,17 @@
 # Bike Courier — Telegram Games backend
 
-A tiny Cloudflare Worker that turns the [Bike Courier](https://alex7kin.github.io/yandexgame/)
-HTML5 game into a Telegram game with a **native leaderboard**. Telegram stores the
-high scores for you (via `setGameScore` / `getGameHighScores`), so there's no database.
+A Cloudflare Worker behind the [Game Zone](https://alex7kin.github.io/yandexgame/)
+mini-games. It gives the **ranked** game a Telegram **native leaderboard** (via
+`setGameScore`), and records the **best score per player per game** for *every*
+game in a **D1** database — viewable on a secret-gated dashboard.
 
-```
+```text
 Player taps "Play"  ─▶  Telegram asks the Worker for a URL
-Worker  ─▶  game URL + signed identity token (?t=…&b=<worker>)
-Game over  ─▶  browser POSTs {t, score} to  <worker>/score
-Worker  ─▶  setGameScore  ─▶  Telegram updates the leaderboard message
+Worker  ─▶  game URL + signed identity token (?t=…&b=<worker>)   (token carries user id + name)
+Game over  ─▶  browser POSTs {t, g, score} to  <worker>/score
+Worker  ─▶  D1 upsert  (best per game+player, all games)
+        └▶  setGameScore  ─▶  Telegram board   (ranked game only)
+Owner   ─▶  <worker>/scores?key=<WEBHOOK_SECRET>   (dashboard of all bests)
 ```
 
 ## What you do once (in @BotFather)
@@ -39,11 +42,28 @@ npx wrangler deploy                      # prints your URL, e.g. https://yandexg
 
 Generate random secrets with: `node -e "console.log(crypto.randomUUID()+crypto.randomUUID())"`
 
+## Central scores database (D1, once)
+
+Creates the SQLite DB that holds every player's best in every game.
+
+```bash
+cd bot
+npx wrangler d1 create gamezone           # prints a database_id — paste it into wrangler.toml
+npx wrangler d1 execute gamezone --remote --file=schema.sql   # create the table
+npx wrangler deploy                        # redeploy with the DB bound
+```
+
+Until the `database_id` is filled in, the Worker still runs — it just skips the
+central store (Telegram scoring keeps working).
+
+**View the dashboard:** open `https://yandexgame-bot.<you>.workers.dev/scores?key=<WEBHOOK_SECRET>`
+— a table of each player's best per game.
+
 ## Register the webhook (once)
 
 Open in a browser (replace the host and key):
 
-```
+```text
 https://yandexgame-bot.<you>.workers.dev/init?key=<WEBHOOK_SECRET>
 ```
 
@@ -63,6 +83,10 @@ appears on the message's leaderboard. Type `@yandexGame0_0bot` in any chat to sh
 | `GAME_URL`        | where the game is hosted (gh-pages)                |
 | `ALLOWED_ORIGIN`  | the game's origin, for CORS on `/score`            |
 | `BOT_USERNAME`    | used only in the help text                         |
+
+Also: **`RANKED_GAME`** — id of the game that updates Telegram's native board
+(**must match `RANKED_GAME` in `app.js`**); and **`OWNER_ID`** — your Telegram user
+id, the only one allowed to run `/reset`.
 
 ## Note on score trust
 
